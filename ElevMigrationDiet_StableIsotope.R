@@ -9,7 +9,7 @@ library(ggpubr)
 `%ni%` <- Negate(`%in%`)
 cbbPalette <- c("#D55E00", "#56B4E9","#000000", "#CC79A7","#009E73", "#E69F00", "#4B0092", "#0072B2","#DC3220" )
 
-setwd("E:/IISC/Global_Change_Lab/Data/Stable_isotope")
+setwd("~/Elev_migration_diet")
 
 # Load bird and baseline plant isotope data
 bird<-read.csv("bird_iso.csv")
@@ -65,8 +65,6 @@ bird$YEAR<-ifelse(bird$YR == 24, 2024, ifelse(bird$YR == 23, 2023, 2022))
 bird$DAY<-as.numeric(bird$DAY)
 bird$MONTH<-as.numeric(bird$MONTH)
 bird$Season<-ifelse(bird$MONTH == 4 | bird$MONTH == 5, "Summer", "Winter") #Defining seasons
-
-setwd("E:/IISC/Global_Change_Lab/Data")
 
 #load data linking date and ring number to isotope data
 ring_sp<-read.csv("ring_numbers.csv") %>% select(-DATE)

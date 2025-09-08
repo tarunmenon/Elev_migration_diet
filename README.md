@@ -1,7 +1,7 @@
 # ACCESS INFORMATION
 
 # DATA & CODE FILE OVERVIEW
-This is the repository for the manuscript titled "Diet as a predictor of elevational migration by Himalayan birds". This data repository consists of 2 major datasets and a corresponding set of scripts that allow you to recreate the analysis in the manuscript. 
+This is the repository for the manuscript titled "Resource abundance and dietary specialization predict elevational migration in a hyperdiverse montane bird community". This data repository consists of 2 major datasets and a corresponding set of scripts that allow you to recreate the analysis in the manuscript. 
 
 # DATA
 

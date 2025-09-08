@@ -4,7 +4,7 @@
 #cutadapt: python 3.6 (https://cutadapt.readthedocs.io/en/v3.6/)
 
 ## you need to do this once for the MiSeq and once for the NovaSeq runs
-## make sure you are in the directory with the Illumina reads that you have downloaded from figshare and unzipped completely
+## make sure you are in the directory with the Illumina reads that you have downloaded from zenodo and unzipped completely
 
 
 # Arthropods

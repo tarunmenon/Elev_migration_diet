@@ -1,6 +1,6 @@
 ## These scripts are to be run on the output of the dada2 pipeline (per sample ASV counts) and the ecotag script (Taxonomically annotated ASVs) to replicate the faecal DNA metabarcoding related visualisation and analysis in the manuscript
 
-setwd("E:/IISC/Global_Change_Lab/Data/DNA_metabarcoding")
+setwd("~/Elev_migration_diet")
 
 library(tidyverse)
 library(vegan)
