@@ -7,11 +7,11 @@ This is the repository for the manuscript titled "Resource abundance and dietary
 
 ## Metabarcoding dataset
 Raw data from the DNA metabarcoding of 261 bird faecal samples in the summer and winter across an elevation gradient in the eastern Himalayas. 
-There are 2 folders containing zipfiles with fastq files within. This can be found on zenodo
+There are 2 zipfiles containing compressed fastq files within. This can be found on zenodo
 
-1) **MiSeq_01122023**: 190 files consisting of the MiSeq 150bp paired end reads of 95 samples
+1) **MiSeq_01122023.zip**: 190 files consisting of the MiSeq 150bp paired end reads of 95 samples
 
-2) **NovaSeq_24012025**: 374 files consisting of the NovaSeq6000 150bp paired end reads of 187 samples
+2) **NovaSeq_24012025.zip**: 374 files consisting of the NovaSeq6000 150bp paired end reads of 187 samples
 
 
 ## Stable isotope dataset
