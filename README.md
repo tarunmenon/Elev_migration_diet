@@ -5,9 +5,9 @@ This is the repository for the manuscript titled "Resource abundance and dietary
 
 # DATA
 
-## Metabarcoding dataset 
+## Metabarcoding dataset
 Raw data from the DNA metabarcoding of 261 bird faecal samples in the summer and winter across an elevation gradient in the eastern Himalayas. 
-There are 2 folders containing zipfiles with fastq files within.
+There are 2 folders containing zipfiles with fastq files within. This can be found on zenodo
 
 1) **MiSeq_01122023**: 190 files consisting of the MiSeq 150bp paired end reads of 95 samples
 
@@ -15,7 +15,7 @@ There are 2 folders containing zipfiles with fastq files within.
 
 
 ## Stable isotope dataset
-Raw data from the Stable Isotope analysis (Carbon and Nitrogen) of 258 bird whole blood samples in the summer and winter and 75 plant samples across an elevation gradient in the eastern Himalayas.
+Raw data from the Stable Isotope analysis (Carbon and Nitrogen) of 258 bird whole blood samples in the summer and winter and 75 plant samples across an elevation gradient in the eastern Himalayas. This can be found on zenodo
 
 1) **bird_iso.csv**: Bird whole blood samples, 3 columns
 Samples: Unique ID for the sample which is combination of the unique number on the ringed bird and the date the sample was collected
@@ -35,6 +35,8 @@ Datasets required to be used in combination with the above two major datasets to
 
 3) **plant_reference.fasta**: Fasta file containing plant reference sequences in ecoPCR format 
 4) **sequences_plantdb.zip**: ecoPCR taxonomy database for plants, unzip and place in the same folder as the reference fasta
+
+The above four datasets are on zenodo
 
 5) **guilds.csv**: dataset describing the migratory status of the birds in the birds sampled. 2 columns
 SPECIES: The common name of the bird species
