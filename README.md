@@ -25,10 +25,10 @@ D15N: Stable isotop ration of Nitrogen (δ15N)
 2) **plant_iso.csv**: Leaf samples, 3 columns
 Sample name: Unique ID for the sample which is combination of the elevation and nth number of samples collected at that elevation
 d13C: Stable isotope ratio of Carbon (δ13C) 
-d15N: Stable isotop ration of Nitrogen (δ15N)
+d15N: Stable isotope ration of Nitrogen (δ15N)
 
 ## Other Datasets
-Datasets required to be used in combination with the above two major datasets to replicate the analysis in the manuscript
+Datasets required to be used in combination with the above two major datasets to replicate the analysis in the manuscript. This can be found on zenodo
 
 1) **arthropod_reference.fasta**: Fasta file containing arthropod reference sequences in ecoPCR format 
 2) **sequences_arthropoddb.zip**: ecoPCR taxonomy database for arthropods, unzip and place in the same folder as the reference fasta
@@ -36,7 +36,6 @@ Datasets required to be used in combination with the above two major datasets to
 3) **plant_reference.fasta**: Fasta file containing plant reference sequences in ecoPCR format 
 4) **sequences_plantdb.zip**: ecoPCR taxonomy database for plants, unzip and place in the same folder as the reference fasta
 
-The above four datasets are on zenodo
 
 5) **guilds.csv**: dataset describing the migratory status of the birds in the birds sampled. 2 columns
 SPECIES: The common name of the bird species
@@ -56,7 +55,7 @@ ID: Unique number on the bird ring
 DATE: The date the faecal sample was collected
 
 ## Intermediate Datasets
-These are datasets that are outputs at various stages of the analysis pipeline in case the user wants to skip any step (Some of the steps in the pipeline require significant computational resources which many users may not have access to)
+These are datasets that are outputs at various stages of the analysis pipeline in case the user wants to skip any step (Some of the steps in the pipeline require significant computational resources which many users may not have access to). This is available on the GitHub repository
 
 1) **arthropod2023_dadaoutput.fasta**: Denoised and dereplicated arthropod ASVs from the DADA2 pipeline on the MiSeq run (after using cutadapt to remove primer sequences)
 
