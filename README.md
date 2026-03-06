@@ -41,9 +41,10 @@ Datasets required to be used in combination with the above two major datasets to
 SPECIES: The common name of the bird species
 mig: The migratory status of the bird (LE_res = low elevation resident, ME_res = mid elevation resident, HE_res = High elevation resident, mig = Elevational migrant)
 
-6) **ring_numbers.csv**: Data to map the ring numbers and dates back onto the metabarcoding and isotope data. There are 7 columns
+6) **ring_numbers_sci.csv**: Data to map the ring numbers and dates back onto the metabarcoding and isotope data. There are 7 columns
 INDID: Unique number on the bird ring
 SPECIES: The common name of the bird species
+Species: The scientific name of the bird species
 DAY: The day the blood/faecal sample was collected
 MONTH: The month the blood/faecal sample was collected
 YEAR: The year the blood/faecal sample was collected
@@ -100,5 +101,5 @@ Use "**ElevMigrationDiet_StableIsotope.R**" to generate the final set of analyse
 OBItools 1.12: python 2.7
 cutadapt 3.6: python 3.12
 R-4.3.3
-R packages: dada2 3.20, nicheROVER 1.1.2, tRophicPosition 0.8.0, SIBER 2.1.9, tidyverse 2.0.0, vegan 2.6-4, ggpubr 0.6.0, cowplot 1.2.0, , iNEXT 3.0.1, gridExtra 2.3
+R packages: dada2 3.20, nicheROVER 1.1.2, tRophicPosition 0.8.0, SIBER 2.1.9, tidyverse 2.0.0, vegan 2.6-4, ggpubr 0.6.0, cowplot 1.2.0, gridExtra 2.3, marginaleffects 0.31.0, ape 5.8-1, broom.mixed 0.2.9.6, purr 1.2.0, ragg 1.5.0
 

@@ -6,7 +6,11 @@ library(tidyverse)
 library(vegan)
 library(ggpubr)
 library(gridExtra)
-library(iNEXT)
+library(ape)
+library(brms)
+library(marginaleffects)
+library(purrr)
+library(broom.mixed)
 `%ni%` <- Negate(`%in%`)
 cbbPalette <- c("#D55E00", "#56B4E9","#000000", "#CC79A7","#009E73", "#E69F00", "#4B0092", "#0072B2","#DC3220" )
 
@@ -64,10 +68,11 @@ art_non_zero <- art_asv_count %>% pivot_longer(cols = all_of(individual_columns)
 result_df_art <- art_non_zero %>%
   group_by(ID, order_name) %>%
   summarise(Count = sum(Count), .groups = 'drop') %>%
-  pivot_wider(names_from = order_name, values_from = Count, values_fill = 0) %>% mutate(ID= recode(ID, "Z2662"="A2662", "A2584" = "Z2584", "A1297"="AB1297", "A2591"="Z2591", "A2594.25422" = "A2690", "A2593"="Z2593",  "A2598"="Z2598",  "A2599"="Z2599", "Z2388" = "A2883", "A1739_10124"="AB1739_10124", "A8224_19124" = "A8224_14124", "A8233_16124"="A8233_15124", "A8317_1224"="Z8317_1224","AB1179_16124" = "AB1179_161223",  "Z5093_19124"="Z5092_19124", "Z5019_22124" = "Z2711_23522",  "A3700_22323"="A3700_22523","A3841_22523" =  "Z3841_22523", "A3865_23523" = "Z3865_23523", "A5119_20124" = "Z5119_20124","Z5152_1224" = "Z2513_30422", "AB0525_18523" = "AB0525_19523", "Z3632_6523" = "A3632_6523", "A3606_18523"="Z3806_18523", "A269807_25422" = "A269087_25422", "AB0373_26422" = "AB0373_26423", "Z2604_5622" = "Z2604_5522", "Z2605_6522"= "Z2605_5522", "Z2612_5622"= "Z2612_5522", "Z3428_26422" = "Z3428_26423", "A3110_141222" = "A3110_151222", "A3165_7123" = "A3165_8123", "A5004_121223" = "A5104_121223","A5200_7124" = "A5200_8124"))
+  pivot_wider(names_from = order_name, values_from = Count, values_fill = 0) %>% mutate(ID= recode(ID, "Z2662"="A2662", "A2584" = "Z2584", "A1297"="AB1297", "A2591"="Z2591", "A2594.25422" = "A2690", "A2593"="Z2593",  "A2598"="Z2598",  "A2599"="Z2599", "Z2388" = "A2883", "A1739_10124"="AB1739_10124", "A8224_19124" = "A8224_14124", "A8233_16124"="A8233_15124", "A8317_1224"="Z8317_1224","AB1179_16124" = "AB1179_161223",  "Z5093_19124"="Z5092_19124", "Z5019_22124" = "Z2711_23522",  "A3700_22323"="A3700_22523","A3841_22523" =  "Z3841_22523", "A3865_23523" = "Z3865_23523", "A5119_20124" = "Z5119_20124","Z5152_1224" = "Z2513_30422", "AB0525_18523" = "AB0525_19523", "Z3632_6523" = "A3632_6523", "A3606_18523"="Z3806_18523", "A269807_25422" = "A269087_25422", "AB0373_26422" = "AB0373_26423", "Z2604_5622" = "Z2604_5522", "Z2605_6522"= "Z2605_5522", "Z2612_5622"= "Z2612_5522", "Z3428_26422" = "Z3428_26423", "A3110_141222" = "A3110_151222", "A3165_7123" = "A3165_8123", "A5004_121223" = "A5104_121223", "A3627_6523" = "A3673_19523", "A3673_19523" = "A3627_6523","A5200_7124" = "A5200_8124"))
+
 
 # Read in the data that maps the sample names with information on species, elevation and date of sample collection
-bird_data<-read.csv("E:/IISC/Global_Change_Lab/Data/ring_numbers.csv")
+bird_data<-read.csv("ring_number_sci.csv")
 
 # Data on migratory status
 guilds<-read.csv("guilds.csv")
@@ -83,7 +88,7 @@ bird_data$season<-ifelse(bird_data$MONTH == 4 | bird_data$MONTH == 5, "Summer", 
 
 art_bird<- left_join(result_df_art,samples_date22) %>% mutate(ID = str_remove(ID, "\\..*"))
 art_bird$ID <- ifelse(is.na(art_bird$DATE), art_bird$ID, paste0(art_bird$ID, "_",sub("^0", "", sub("^(\\d+)-0?(\\d+)-(\\d{2})(\\d{2})$", "\\1\\2\\4", art_bird$DATE))))
-art_bird<-art_bird%>% left_join(bird_data, by = "ID") %>% left_join(guilds)
+art_bird<-art_bird%>% left_join(bird_data, by = "ID") %>% left_join(guilds) %>% filter(mig == "HE_res" | mig == "mig")
 
 # Creating a long table of all possible samples with counts of all possible Orders 
 z<-art_bird %>% pivot_longer(cols = names(art_bird[2:25]),names_to = "arthropod_order", values_to = "count") %>% drop_na(SPECIES) %>% filter(mig == "HE_res" | mig == "mig")
@@ -105,20 +110,26 @@ art_bar <- z %>%
 # Plot for Figure 4
 art_all<-art_bar %>% filter(arthropod_order %in% c("Araneae", "Coleoptera", "Lepidoptera", "Hemiptera", "Diptera")) %>%
   mutate(mig = recode(mig, "HE_res" = "Resident"))%>%
-  mutate(mig = recode(mig, "mig" = "Migrant")) %>% ggplot(aes(x = mig, y = proportion, fill = season)) + 
+  mutate(mig = recode(mig, "mig" = "Migrant")) 
+
+art_all$mig <- factor(art_all$mig, levels=c("Resident", "Migrant"))
+  
+art_all_plot <-  art_all %>% ggplot(aes(x = mig, y = proportion, fill = season)) + 
   geom_bar(stat = "identity", position = position_dodge()) +
   facet_wrap(~arthropod_order ) +
   labs(x = "Migratory Status",
        y = "Frequency of Occurrence",
        fill = "Season") +
-  theme_bw(base_size = 15)+
+  theme_bw()+
+  theme(axis.title = element_text(size =15), legend.title = element_text(size =20), legend.text = element_text(size =15), axis.text = element_text(size =11), strip.text = element_text(size = 15))+
   scale_fill_manual(values = cbbPalette)+
   theme(legend.position = "inside",
         legend.justification = c(0.9,0.2),
         legend.background = element_blank(),
-        legend.box.background = element_rect(colour = "black"))
+        legend.box.background = element_rect(colour = "black")) +
+  ggtitle("Figure 3")
 
-#ggsave(plot = art_all, "Fig4.jpeg", width = 8, height = 5)
+#ggsave(plot = art_all_plot, "Figure3.tif", device = "tiff", dpi = 600, compression = "lzw", width = 11, height = 7)
 
 
 ## Supplementary plot
@@ -161,26 +172,108 @@ art_species<-ggarrange(art_res, art_mig, ncol = 2, common.legend = T, legend = "
 
 #ggsave("FigS1.jpeg", art_species, width = 9, height = 13)
 
+#######
+
+github.directory <- "https://raw.githubusercontent.com/evolucionario/BigBirdTree/refs/heads/main/"
+
+stage <- "RAGBackbone/"
+
+tree <- "BBtreeC2022.tre"
+
+url <- paste0(github.directory, stage, tree)
+
+BBtree2 <- read.tree(url)
+BBtree2$tip.label[BBtree2$tip.label == "Phylloscopus_burkii"] <- "Phylloscopus_whistleri"
+BBtree2$tip.label[BBtree2$tip.label == "Phylloscopus_inornatus"] <- "Phylloscopus_pulcher"
+
+Diet_Binary<-art_bird %>%
+  mutate(across(Araneae:Trombidiformes, ~ ifelse(. > 0, 1, 0)))%>%
+  mutate(Species = str_replace_all(Species, " ", "_"))
+
+Diet_Binary$phylo_id<-Diet_Binary$Species
+
+tree_pruned <- keep.tip(BBtree2, Diet_Binary$Species)
+phylo_matrix <- vcv.phylo(tree_pruned, corr = TRUE)
+Diet_Binary$mig <- factor(Diet_Binary$mig, 
+                          levels = c("mig", "HE_res"), 
+                          labels = c("Migrant", "Resident"))
 
 
-#Proportion tests for each of the 5 orders
-art_bar$nondetections<-art_bar$total-art_bar$detections
+spider<- brm(Araneae ~ season*mig + (1 | gr(phylo_id, cov = phylo)),
+             data = Diet_Binary,
+             data2 = list(phylo = phylo_matrix),
+             family = bernoulli(),
+             chains = 4, iter = 4000, cores = 4,
+             control = list(adapt_delta = 0.95))
 
-Lep_res<-prop.test(art_bar %>% filter(arthropod_order == "Lepidoptera" & mig == "HE_res") %>% select(detections,nondetections) %>% as.matrix())
-Lep_mig<-prop.test(art_bar %>% filter(arthropod_order == "Lepidoptera" & mig == "mig") %>% select(detections,nondetections) %>% as.matrix())
+comparisons(spider, variables = "season", by = "mig")
 
-Hem_res<-prop.test(art_bar %>% filter(arthropod_order == "Hemiptera" & mig == "HE_res") %>% select(detections,nondetections) %>% as.matrix())
-Hem_mig<-prop.test(art_bar %>% filter(arthropod_order == "Hemiptera" & mig == "mig") %>% select(detections,nondetections) %>% as.matrix())
+bug<- brm(Hemiptera ~ season*mig + (1 | gr(phylo_id, cov = phylo)),
+             data = Diet_Binary,
+             data2 = list(phylo = phylo_matrix),
+             family = bernoulli(),
+             chains = 4, iter = 4000, cores = 4,
+             control = list(adapt_delta = 0.95))
 
-Col_res<-prop.test(art_bar %>% filter(arthropod_order == "Coleoptera" & mig == "HE_res") %>% select(detections,nondetections) %>% as.matrix())
-Col_mig<-prop.test(art_bar %>% filter(arthropod_order == "Coleoptera" & mig == "mig") %>% select(detections,nondetections) %>% as.matrix())
+comparisons(bug, variables = "season", by = "mig")
 
-Ara_res<-prop.test(art_bar %>% filter(arthropod_order == "Araneae" & mig == "HE_res") %>% select(detections,nondetections) %>% as.matrix())
-Ara_mig<-prop.test(art_bar %>% filter(arthropod_order == "Araneae" & mig == "mig") %>% select(detections,nondetections) %>% as.matrix())
+beetle<- brm(Coleoptera ~ season*mig + (1 | gr(phylo_id, cov = phylo)),
+             data = Diet_Binary,
+             data2 = list(phylo = phylo_matrix),
+             family = bernoulli(),
+             chains = 4, iter = 4000, cores = 4,
+             control = list(adapt_delta = 0.95))
 
-Dip_res<-prop.test(art_bar %>% filter(arthropod_order == "Diptera" & mig == "HE_res") %>% select(detections,nondetections) %>% as.matrix())
-Dip_mig<-prop.test(art_bar %>% filter(arthropod_order == "Diptera" & mig == "mig") %>% select(detections,nondetections) %>% as.matrix())
+comparisons(beetle, variables = "season", by = "mig")
 
+lep<- brm(Lepidoptera ~ season*mig + (1 | gr(phylo_id, cov = phylo)),
+             data = Diet_Binary,
+             data2 = list(phylo = phylo_matrix),
+             family = bernoulli(),
+             chains = 4, iter = 4000, cores = 4,
+             control = list(adapt_delta = 0.95))
+
+comparisons(lep, variables = "season", by = "mig")
+
+fly<- brm(Diptera ~ season*mig + (1 | gr(phylo_id, cov = phylo)),
+             data = Diet_Binary,
+             data2 = list(phylo = phylo_matrix),
+             family = bernoulli(),
+             chains = 4, iter = 4000, cores = 4,
+             control = list(adapt_delta = 0.95))
+
+comparisons(fly, variables = "season", by = "mig")
+
+arthropod_models <- list(
+  "Araneae" = spider,
+  "Hemiptera" = bug,
+  "Coleoptera" = beetle,
+  "Lepidoptera" = lep,
+  "Diptera" = fly
+)
+
+arthropod_long_table <- arthropod_models %>%
+  map_dfr(function(m) {
+    # tidy(m) with effects = c("fixed", "ran_pars") pulls both regression and SD
+    tidy(m, effects = c("fixed", "ran_pars"), conf.int = TRUE, rhat = TRUE, ess = TRUE)
+  }, .id = "Prey_Order") %>%
+  mutate(
+    Parameter = case_when(
+      term == "(Intercept)" ~ "Intercept",
+      term == "seasonWinter" ~ "Season_winter",
+      term == "migResident" ~ "MigStrat_resident",
+      term == "seasonWinter:migResident" ~ "MigStrat*Season",
+      term == "sd__(Intercept)" ~ "Phylogenetic SD (sd_Intercept)",
+      TRUE ~ term
+    ),
+    Estimate = round(estimate, 2),
+    `95% CI` = paste0("[", round(conf.low, 2), ", ", round(conf.high, 2), "]"),
+    Rhat = round(rhat, 3),
+    ESS = round(ess, 0)
+  ) %>%
+  select(Prey_Order, Parameter, Estimate, `95% CI`, Rhat, ESS)
+
+#write.csv(arthropod_long_table, "Table_S5.csv", row.names = FALSE)
 
 ####### Plant Reads
 
@@ -242,12 +335,12 @@ plnF_non_zero <- pln_count_family %>% pivot_longer(cols = all_of(individual_colu
 result_pln_family <- plnF_non_zero %>%
   group_by(ID, family_name) %>%
   summarise(Count = sum(Count), .groups = 'drop') %>%
-  pivot_wider(names_from = family_name, values_from = Count, values_fill = 0) %>% mutate(ID= recode(ID, "Z2662"="A2662", "A2584" = "Z2584", "A1297"="AB1297", "A2591"="Z2591", "A2594.25422" = "A2690", "A2593"="Z2593",  "A2598"="Z2598",  "A2599"="Z2599", "Z2388" = "A2883", "A1739_10124"="AB1739_10124", "A8224_19124" = "A8224_14124", "A8233_16124"="A8233_15124", "A8317_1224"="Z8317_1224","AB1179_16124" = "AB1179_161223",  "Z5093_19124"="Z5092_19124", "Z5019_22124" = "Z2711_23522",  "A3700_22323"="A3700_22523","A3841_22523" =  "Z3841_22523", "A3865_23523" = "Z3865_23523", "A5119_20124" = "Z5119_20124","Z5152_1224" = "Z2513_30422", "AB0525_18523" = "AB0525_19523", "Z3632_6523" = "A3632_6523", "A3606_18523"="Z3806_18523", "A269807_25422" = "A269087_25422", "AB0373_26422" = "AB0373_26423", "Z2604_5622" = "Z2604_5522", "Z2605_6522"= "Z2605_5522", "Z2612_5622"= "Z2612_5522", "Z3428_26422" = "Z3428_26423", "A3110_141222" = "A3110_151222", "A3165_7123" = "A3165_8123", "A5004_121223" = "A5104_121223","A5200_7124" = "A5200_8124"))
+  pivot_wider(names_from = family_name, values_from = Count, values_fill = 0) %>% mutate(ID= recode(ID, "Z2662"="A2662", "A2584" = "Z2584", "A1297"="AB1297", "A2591"="Z2591", "A2594.25422" = "A2690", "A2593"="Z2593",  "A2598"="Z2598",  "A2599"="Z2599", "Z2388" = "A2883", "A1739_10124"="AB1739_10124", "A8224_19124" = "A8224_14124", "A8233_16124"="A8233_15124", "A8317_1224"="Z8317_1224","AB1179_16124" = "AB1179_161223",  "Z5093_19124"="Z5092_19124", "Z5019_22124" = "Z2711_23522",  "A3700_22323"="A3700_22523","A3841_22523" =  "Z3841_22523", "A3865_23523" = "Z3865_23523", "A5119_20124" = "Z5119_20124","Z5152_1224" = "Z2513_30422", "AB0525_18523" = "AB0525_19523", "Z3632_6523" = "A3632_6523", "A3606_18523"="Z3806_18523", "A269807_25422" = "A269087_25422", "AB0373_26422" = "AB0373_26423", "Z2604_5622" = "Z2604_5522", "Z2605_6522"= "Z2605_5522", "Z2612_5622"= "Z2612_5522", "Z3428_26422" = "Z3428_26423", "A3110_141222" = "A3110_151222", "A3165_7123" = "A3165_8123", "A5004_121223" = "A5104_121223", "A3627_6523" = "A3673_19523", "A3673_19523" = "A3627_6523","A5200_7124" = "A5200_8124"))
 
 ## Merging the all the datasets
 pln_bird_family<- left_join(result_pln_family,samples_date22) %>% mutate(ID = str_remove(ID, "\\..*"))
 pln_bird_family$ID <- ifelse(is.na(pln_bird_family$DATE), pln_bird_family$ID, paste0(pln_bird_family$ID, "_",sub("^0", "", sub("^(\\d+)-0?(\\d+)-(\\d{2})(\\d{2})$", "\\1\\2\\4", pln_bird_family$DATE))))
-pln_bird_family<-pln_bird_family%>% left_join(bird_data, by = "ID") %>% left_join(guilds)
+pln_bird_family<-pln_bird_family%>% left_join(bird_data, by = "ID") %>% left_join(guilds) %>% filter(mig == "HE_res" | mig == "mig")
 
 # Creating a long table of all possible samples with counts of all possible families
 y<-pln_bird_family %>% pivot_longer(cols = names(pln_bird_family[2:90]),names_to = "plant_family", values_to = "count") %>% drop_na(SPECIES) %>% filter(mig == "HE_res" | mig == "mig")
@@ -269,12 +362,27 @@ pln_bar <- y %>%
 # Subsetting important families (Supplementary table 5)
 c<-pln_bar %>% filter(plant_family %in% c("Polygonaceae", "Ericaceae", "Rosaceae", "Caprifoliaceae", "Acanthaceae", "Malvaceae", "Pinaceae", "Poaceae", "Fagaceae" ))
 
-# Proportion test
-pln_bar$nondetections<-pln_bar$total-pln_bar$detections
+#
+plant_Binary<-pln_bird_family %>%
+  mutate(across(Acanthaceae:Zingiberaceae, ~ ifelse(. > 0, 1, 0)))%>%
+  mutate(Species = str_replace_all(Species, " ", "_"))
 
-Pol_res<-prop.test(pln_bar %>% filter(plant_family == "Polygonaceae" & mig == "HE_res") %>% select(detections,nondetections) %>% as.matrix())
-Pol_mig<-prop.test(pln_bar %>% filter(plant_family == "Polygonaceae" & mig == "mig") %>% select(detections,nondetections) %>% as.matrix())
+plant_Binary$phylo_id<-plant_Binary$Species
 
+tree_pruned <- keep.tip(BBtree2, plant_Binary$Species)
+phylo_matrix <- vcv.phylo(tree_pruned, corr = TRUE)
+plant_Binary$mig <- factor(plant_Binary$mig, 
+                          levels = c("mig", "HE_res"), 
+                          labels = c("Migrant", "Resident"))
+
+knotweed<- brm(Polygonaceae ~ season*mig + (1 | gr(phylo_id, cov = phylo)),
+             data = plant_Binary,
+             data2 = list(phylo = phylo_matrix),
+             family = bernoulli(),
+             chains = 4, iter = 4000, cores = 4,
+             control = list(adapt_delta = 0.98))
+
+comparisons(knotweed, variables = "season", by = "mig")
 
 ###### Plant orders
 ## Analysis of plants also done at the order level for the community level analysis
@@ -320,12 +428,13 @@ plnO_non_zero <- pln_count_order %>% pivot_longer(cols = all_of(individual_colum
 result_pln_order <- plnO_non_zero %>%
   group_by(ID, order_name) %>%
   summarise(Count = sum(Count), .groups = 'drop') %>%
-  pivot_wider(names_from = order_name, values_from = Count, values_fill = 0) %>% mutate(ID= recode(ID, "Z2662"="A2662", "A2584" = "Z2584", "A1297"="AB1297", "A2591"="Z2591", "A2594.25422" = "A2690", "A2593"="Z2593",  "A2598"="Z2598",  "A2599"="Z2599", "Z2388" = "A2883", "A1739_10124"="AB1739_10124", "A8224_19124" = "A8224_14124", "A8233_16124"="A8233_15124", "A8317_1224"="Z8317_1224","AB1179_16124" = "AB1179_161223",  "Z5093_19124"="Z5092_19124", "Z5019_22124" = "Z2711_23522",  "A3700_22323"="A3700_22523","A3841_22523" =  "Z3841_22523", "A3865_23523" = "Z3865_23523", "A5119_20124" = "Z5119_20124","Z5152_1224" = "Z2513_30422", "AB0525_18523" = "AB0525_19523", "Z3632_6523" = "A3632_6523", "A3606_18523"="Z3806_18523", "A269807_25422" = "A269087_25422", "AB0373_26422" = "AB0373_26423", "Z2604_5622" = "Z2604_5522", "Z2605_6522"= "Z2605_5522", "Z2612_5622"= "Z2612_5522", "Z3428_26422" = "Z3428_26423", "A3110_141222" = "A3110_151222", "A3165_7123" = "A3165_8123", "A5004_121223" = "A5104_121223","A5200_7124" = "A5200_8124"))
+  pivot_wider(names_from = order_name, values_from = Count, values_fill = 0) %>% mutate(ID= recode(ID, "Z2662"="A2662", "A2584" = "Z2584", "A1297"="AB1297", "A2591"="Z2591", "A2594.25422" = "A2690", "A2593"="Z2593",  "A2598"="Z2598",  "A2599"="Z2599", "Z2388" = "A2883", "A1739_10124"="AB1739_10124", "A8224_19124" = "A8224_14124", "A8233_16124"="A8233_15124", "A8317_1224"="Z8317_1224","AB1179_16124" = "AB1179_161223",  "Z5093_19124"="Z5092_19124", "Z5019_22124" = "Z2711_23522",  "A3700_22323"="A3700_22523","A3841_22523" =  "Z3841_22523", "A3865_23523" = "Z3865_23523", "A5119_20124" = "Z5119_20124","Z5152_1224" = "Z2513_30422", "AB0525_18523" = "AB0525_19523", "Z3632_6523" = "A3632_6523", "A3606_18523"="Z3806_18523", "A269807_25422" = "A269087_25422", "AB0373_26422" = "AB0373_26423", "Z2604_5622" = "Z2604_5522", "Z2605_6522"= "Z2605_5522", "Z2612_5622"= "Z2612_5522", "Z3428_26422" = "Z3428_26423", "A3110_141222" = "A3110_151222", "A3165_7123" = "A3165_8123", "A5004_121223" = "A5104_121223", "A3627_6523" = "A3673_19523", "A3673_19523" = "A3627_6523","A5200_7124" = "A5200_8124"))
 
 ## Merging the all the datasets
 pln_bird_order<- left_join(result_pln_order,samples_date22) %>% mutate(ID = str_remove(ID, "\\..*"))
 pln_bird_order$ID <- ifelse(is.na(pln_bird_order$DATE), pln_bird_order$ID, paste0(pln_bird_order$ID, "_",sub("^0", "", sub("^(\\d+)-0?(\\d+)-(\\d{2})(\\d{2})$", "\\1\\2\\4", pln_bird_order$DATE))))
-pln_bird_order<-pln_bird_order%>% left_join(bird_data, by = "ID") %>% left_join(guilds)
+pln_bird_order<-pln_bird_order%>% left_join(bird_data, by = "ID") %>% left_join(guilds) %>% filter(mig == "HE_res" | mig == "mig")
+
 
 
 ####### Community analysis, Ordination, Permanova, Permdisp
@@ -343,7 +452,7 @@ bird_diet$specsea<-paste0(bird_diet$SPECIES,"_",bird_diet$season)
 bird_diet<-bird_diet%>% filter(SPECIES %in% c("Brown-throated Fulvetta", "Rufous-vented Yuhina", "Streak-breasted Scimitar-Babbler", "Stripe-throated Yuhina", "Rufous-capped Babbler", "Whistler's Warbler", "Rufous-gorgeted Flycatcher", "Chestnut-headed Tesia", "Rufous-winged Fulvetta", "Rufous-bellied Niltava", "Buff-barred Warbler"))
 
 ## Create dissimmilarity matrix with jaccard index
-x.dist<-vegdist(bird_diet[,-c(1,26:35,76:82)], method = "jaccard", binary = T)
+x.dist<-vegdist(bird_diet[,-c(1,26:37,78:86)], method = "jaccard", binary = T)
 x.dist<-as.matrix(x.dist)
 
 ## PCoA plot
@@ -374,21 +483,25 @@ for(g in levels(pcoa_PLOT$migsea)){
 df_ell$migsea<-as.factor(df_ell$migsea) 
 
 ## Plotting the PCoA - Figure 5
-PCoA_all<-pcoa_PLOT %>% ggplot(aes(X1, X2)) + geom_point(aes(colour = migsea)) + 
+PCoA_all<-pcoa_PLOT %>% ggplot(aes(X1, X2)) + geom_point(aes(colour = migsea, shape = season), show.legend = FALSE) + 
   geom_polygon(data = df_ell, aes(x=Dim1, y=Dim2, colour = migsea), fill = NA , linewidth=1)+
   scale_color_manual(values = cbbPalette)+
   xlab("PCoA 1") + ylab("PCoA2")+
+  xlim(-0.5,0.5) + ylim(-0.5,0.5)+
+  coord_fixed(ratio = 1)+
   theme_bw()+
-  guides(color = guide_legend(title = "Migratory Behaviour \nand Season"), shape = "none", linetype = "none")
+  theme(axis.title = element_text(size =15), legend.title = element_text(size =15), legend.text = element_text(size =15), axis.text = element_text(size =11), strip.text = element_text(size = 15))+
+  guides(color = guide_legend(title = "Migratory Behaviour \nand Season"), shape = "none", linetype = "none", override.aes = list(shape = NA))+
+  ggtitle("Figure 4")
 
-#ggsave(plot = PCoA_all, "Fig5.jpeg", width = 7, height = 4)
+#ggsave(plot = PCoA_all, "Figure4.tif",  device = "tiff", dpi = 600, compression = "lzw", width = 11, height = 6)
 
 
 ## PCoA at the species level
 # Migratory species
 mig_diet<-bird_diet %>% filter(SPECIES %in% c("Whistler's Warbler", "Rufous-gorgeted Flycatcher", "Chestnut-headed Tesia", "Rufous-winged Fulvetta", "Rufous-bellied Niltava", "Buff-barred Warbler"))
 
-mig.dist<-vegdist(mig_diet[,-c(1,26:35,76:82)], method = "jaccard", binary = T)
+mig.dist<-vegdist(mig_diet[,-c(1,26:37,78:86)], method = "jaccard", binary = T)
 mig.dist<-as.matrix(mig.dist)
 pcoa_mig <- cmdscale(mig.dist, eig=TRUE)
 pcoa_migPLOT<- data.frame(pcoa_mig$points, sp = as.factor(mig_diet$SPECIES), season = as.factor(mig_diet$season), specsea = as.factor(mig_diet$specsea))
@@ -417,6 +530,7 @@ df_ell_mig$sp<-as.factor(df_ell_mig$sp)
 ## PCoA plot of migratory species
 migplot<-pcoa_migPLOT %>% ggplot(aes(X1, X2)) + geom_point(aes(colour = sp, shape = season)) + 
   geom_polygon(data = df_ell_mig, aes(x=Dim1, y=Dim2, colour = sp, linetype = season), fill = NA , linewidth=1)+
+  coord_fixed(ratio = 1)+
   scale_color_manual(values = cbbPalette)+xlim(-0.5,0.5)+
   xlab("PCoA 1") + ylab("PCoA2")+
   guides(color = guide_legend(title = "Migratory Species"), shape = "none", linetype = "none")
@@ -425,7 +539,7 @@ migplot<-pcoa_migPLOT %>% ggplot(aes(X1, X2)) + geom_point(aes(colour = sp, shap
 # Resident species
 res_diet<-bird_diet %>% filter(SPECIES %in% c("Brown-throated Fulvetta", "Rufous-vented Yuhina", "Streak-breasted Scimitar-Babbler", "Stripe-throated Yuhina", "Rufous-capped Babbler"))
 
-res.dist<-vegdist(res_diet[,-c(1,26:35,76:82)], method = "jaccard", binary = T)
+res.dist<-vegdist(res_diet[,-c(1,26:37,78:86)], method = "jaccard", binary = T)
 res.dist<-as.matrix(res.dist)
 pcoa_res <- cmdscale(res.dist, eig=TRUE)
 pcoa_resPLOT<- data.frame(pcoa_res$points, sp = as.factor(res_diet$SPECIES), season = as.factor(res_diet$season), specsea = as.factor(res_diet$specsea))
@@ -454,6 +568,7 @@ df_ell_res$sp<-as.factor(df_ell_res$sp)
 ## PCoA plot of resident species
 resplot<-pcoa_resPLOT %>% ggplot(aes(X1, X2)) + geom_point(aes(colour = sp, shape = season)) + 
   geom_polygon(data = df_ell_res, aes(x=Dim1, y=Dim2, colour = sp, linetype = season), fill = NA , linewidth=1)+
+  coord_fixed(ratio = 1)+
   scale_color_manual(values = cbbPalette) +xlim(-0.5,0.5)+
   xlab("PCoA 1") + ylab("PCoA2")+
   guides(color = guide_legend(title = "Resident Species"), shape = "none", linetype = "none")
@@ -461,434 +576,98 @@ resplot<-pcoa_resPLOT %>% ggplot(aes(X1, X2)) + geom_point(aes(colour = sp, shap
 ## Plotting the species level PCoA - Supplementary figure 3
 PCoA_sp<-ggarrange(resplot, migplot, nrow = 2)
 
-#ggsave(plot = PCoA_sp, "FigS3.jpeg", width = 9, height = 6)
+#ggsave(plot = PCoA_sp, "FigS3.jpeg", width = 6, height = 6)
 
 #########
 
 #PERMANOVA for each species
+perm_structure_res <- how(blocks = bird_diet %>% filter(mig == "HE_res") %>% .$SPECIES, nperm = 999)
 
-permres<-adonis2(bird_diet %>% filter(mig == "HE_res") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
-                   bird_diet %>% filter(mig == "HE_res") %>% .$season , method = "jaccard")
+permres<-adonis2(bird_diet %>% filter(mig == "HE_res") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+                   bird_diet %>% filter(mig == "HE_res") %>% .$season , method = "jaccard", permutations = perm_structure_res)
 
-permmig<-adonis2(bird_diet %>% filter(mig == "mig") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
-                   bird_diet %>% filter(mig == "mig") %>% .$season , method = "jaccard")
 
-permBTFU<-adonis2(bird_diet %>% filter(SPECIES == "Brown-throated Fulvetta") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+perm_structure_mig <- how(blocks = bird_diet %>% filter(mig == "mig") %>% .$SPECIES, nperm = 999)
+permmig<-adonis2(bird_diet %>% filter(mig == "mig") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+                   bird_diet %>% filter(mig == "mig") %>% .$season , method = "jaccard", permutations = perm_structure_mig)
+
+
+
+permBTFU<-adonis2(bird_diet %>% filter(SPECIES == "Brown-throated Fulvetta") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Brown-throated Fulvetta") %>% .$season , method = "jaccard")
 
 
-permCHTE<-adonis2(bird_diet %>% filter(SPECIES == "Chestnut-headed Tesia") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+permCHTE<-adonis2(bird_diet %>% filter(SPECIES == "Chestnut-headed Tesia") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Chestnut-headed Tesia") %>% .$season , method = "jaccard")
 
-permRCBA<-adonis2(bird_diet %>% filter(SPECIES == "Rufous-capped Babbler") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+permRCBA<-adonis2(bird_diet %>% filter(SPECIES == "Rufous-capped Babbler") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Rufous-capped Babbler") %>% .$season , method = "jaccard")
 
-permRBNI<-adonis2(bird_diet %>% filter(SPECIES == "Rufous-bellied Niltava") %>%select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+permRBNI<-adonis2(bird_diet %>% filter(SPECIES == "Rufous-bellied Niltava") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Rufous-bellied Niltava") %>% .$season , method = "jaccard")
 
-permRVYU<-adonis2(bird_diet %>% filter(SPECIES == "Rufous-vented Yuhina") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+permRVYU<-adonis2(bird_diet %>% filter(SPECIES == "Rufous-vented Yuhina")%>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Rufous-vented Yuhina") %>% .$season , method = "jaccard")
 
-permRGFL<-adonis2(bird_diet %>% filter(SPECIES == "Rufous-gorgeted Flycatcher") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+permRGFL<-adonis2(bird_diet %>% filter(SPECIES == "Rufous-gorgeted Flycatcher") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Rufous-gorgeted Flycatcher") %>% .$season , method = "jaccard")
 
-permSBSB<-adonis2(bird_diet %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+permSBSB<-adonis2(bird_diet %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler")%>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler") %>% .$season , method = "jaccard")
 
-permRWFU<-adonis2(bird_diet %>% filter(SPECIES == "Rufous-winged Fulvetta") %>%select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+permRWFU<-adonis2(bird_diet %>% filter(SPECIES == "Rufous-winged Fulvetta") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Rufous-winged Fulvetta") %>% .$season , method = "jaccard")
 
-permSTYU<-adonis2(bird_diet %>% filter(SPECIES == "Stripe-throated Yuhina") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+permSTYU<-adonis2(bird_diet %>% filter(SPECIES == "Stripe-throated Yuhina") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Stripe-throated Yuhina") %>% .$season , method = "jaccard")
 
-permWHWA<-adonis2(bird_diet %>% filter(SPECIES == "Whistler's Warbler") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+permWHWA<-adonis2(bird_diet %>% filter(SPECIES == "Whistler's Warbler") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Whistler's Warbler") %>% .$season , method = "jaccard")
 
-permBBWA<-adonis2(bird_diet %>% filter(SPECIES == "Buff-barred Warbler") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
+permBBWA<-adonis2(bird_diet %>% filter(SPECIES == "Buff-barred Warbler") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)) ~
                     bird_diet %>% filter(SPECIES == "Buff-barred Warbler") %>% .$season , method = "jaccard")
 
 
 #######
 #PERMDISP for each species
-perdismig<-betadisper(vegdist(bird_diet %>% filter(mig == "mig") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(mig == "mig") %>% .$season, type = "centroid")
-anova(perdismig)
 
-perdisres<-betadisper(vegdist(bird_diet %>% filter(mig == "HE_res") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(mig == "HE_res") %>% .$season, type = "centroid")
-anova(perdisres)
+perdismig<-betadisper(vegdist(bird_diet %>% filter(mig == "mig") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(mig == "mig") %>% .$season, type = "centroid")
 
-perdisBTFU<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Brown-throated Fulvetta") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Brown-throated Fulvetta") %>% .$season, type = "centroid")
+permutest(perdismig, pairwise = TRUE, permutations = perm_structure_mig)
+
+perdisres<-betadisper(vegdist(bird_diet %>% filter(mig == "HE_res") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(mig == "HE_res") %>% .$season, type = "centroid")
+
+permutest(perdisres, pairwise = TRUE, permutations = perm_structure_res)
+
+perdisBTFU<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Brown-throated Fulvetta") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Brown-throated Fulvetta") %>% .$season, type = "centroid")
 anova(perdisBTFU)
 
-perdisRCBA<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Rufous-capped Babbler") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Rufous-capped Babbler") %>% .$season, type = "centroid",)
+perdisRCBA<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Rufous-capped Babbler") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Rufous-capped Babbler") %>% .$season, type = "centroid",)
 anova(perdisRCBA)
 
-perdisRVYU<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Rufous-vented Yuhina") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Rufous-vented Yuhina") %>% .$season, type = "centroid")
+perdisRVYU<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Rufous-vented Yuhina") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Rufous-vented Yuhina") %>% .$season, type = "centroid")
 anova(perdisRVYU)
 
-perdisSBSB<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler") %>% .$season, type = "centroid")
+perdisSBSB<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler") %>% .$season, type = "centroid")
 anova(perdisSBSB)
 
-perdisSTYU<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Stripe-throated Yuhina") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Stripe-throated Yuhina") %>% .$season, type = "centroid")
+perdisSTYU<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Stripe-throated Yuhina")%>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Stripe-throated Yuhina") %>% .$season, type = "centroid")
 anova(perdisSTYU)
 
-perdisCHTE<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Chestnut-headed Tesia") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Chestnut-headed Tesia") %>% .$season, type = "centroid")
+perdisCHTE<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Chestnut-headed Tesia") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Chestnut-headed Tesia") %>% .$season, type = "centroid")
 anova(perdisCHTE)
 
-perdisRBNI<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Rufous-bellied Niltava") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Rufous-bellied Niltava") %>% .$season, type = "centroid")
+perdisRBNI<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Rufous-bellied Niltava") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Rufous-bellied Niltava") %>% .$season, type = "centroid")
 anova(perdisRBNI)
 
-perdisRGFL<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Rufous-gorgeted Flycatcher") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Rufous-gorgeted Flycatcher") %>% .$season, type = "centroid")
+perdisRGFL<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Rufous-gorgeted Flycatcher") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Rufous-gorgeted Flycatcher") %>% .$season, type = "centroid")
 anova(perdisRGFL)
 
-perdisRWFU<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Rufous-winged Fulvetta") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Rufous-winged Fulvetta") %>% .$season, type = "centroid")
+perdisRWFU<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Rufous-winged Fulvetta") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Rufous-winged Fulvetta") %>% .$season, type = "centroid")
 anova(perdisRWFU)
 
-perdisWHWA<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Whistler's Warbler") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Whistler's Warbler") %>% .$season, type = "centroid")
+perdisWHWA<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Whistler's Warbler") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Whistler's Warbler") %>% .$season, type = "centroid")
 anova(perdisWHWA)
 
-perdisBBWA<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Buff-barred Warbler") %>% select(-c(ID, DATE.x.x, INDID, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Buff-barred Warbler") %>% .$season, type = "centroid")
+perdisBBWA<-betadisper(vegdist(bird_diet %>% filter(SPECIES == "Buff-barred Warbler") %>% select(-c(ID, DATE.x.x, INDID, Time.x, Time.y, Species.x, Species.y, DATE.y.x, DATE.x.y, DATE.y.y, season, mig, SPECIES, migsea, ELEV,specsea, DAY.x, DAY.y, MONTH.x, MONTH.y, YEAR.x, YEAR.y)), method = "jaccard", binary = T), bird_diet %>% filter(SPECIES == "Buff-barred Warbler") %>% .$season, type = "centroid")
 anova(perdisBBWA)
-
-
-####### Estimating arthropod order richness across species and season
-
-## Resident species - arthropod order presence and absence in summer and winter
-BTFU_Summer<- art_bird %>% filter(SPECIES == "Brown-throated Fulvetta" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-RCBA_Summer<- art_bird %>% filter(SPECIES == "Rufous-capped Babbler" & season == "Summer")%>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RVYU_Summer<- art_bird %>% filter(SPECIES == "Rufous-vented Yuhina" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-SBSB_Summer<- art_bird %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-STYU_Summer<- art_bird %>% filter(SPECIES == "Stripe-throated Yuhina" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BTFU_Winter<- art_bird %>% filter(SPECIES == "Brown-throated Fulvetta" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RCBA_Winter<- art_bird %>% filter(SPECIES == "Rufous-capped Babbler" & season == "Winter")%>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RVYU_Winter<- art_bird %>% filter(SPECIES == "Rufous-vented Yuhina" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-SBSB_Winter<- art_bird %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-STYU_Winter<- art_bird %>% filter(SPECIES == "Stripe-throated Yuhina" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-# Creating an array of resident species
-HE_res_art<-list(BTFU_Summer = BTFU_Summer,RCBA_Summer = RCBA_Summer,RVYU_Summer = RVYU_Summer,SBSB_Summer = SBSB_Summer,STYU_Summer = STYU_Summer,BTFU_Winter = BTFU_Winter,RCBA_Winter = RCBA_Winter,RVYU_Winter=RVYU_Winter,SBSB_Winter=SBSB_Winter,STYU_Winter=STYU_Winter)
-
-# Migrant Species - arthropod order presence and absence in summer and winter
-CHTE_Summer<- art_bird %>% filter(SPECIES == "Chestnut-headed Tesia" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-RBNI_Summer<- art_bird %>% filter(SPECIES == "Rufous-bellied Niltava" & season == "Summer")%>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RGFL_Summer<- art_bird %>% filter(SPECIES == "Rufous-gorgeted Flycatcher" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RWFU_Summer<- art_bird %>% filter(SPECIES == "Rufous-winged Fulvetta" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-WHWA_Summer<- art_bird %>% filter(SPECIES == "Whistler's Warbler" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BBWA_Summer<-art_bird %>% filter(SPECIES == "Buff-barred Warbler" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-CHTE_Winter<- art_bird %>% filter(SPECIES == "Chestnut-headed Tesia" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RGFL_Winter<- art_bird %>% filter(SPECIES == "Rufous-gorgeted Flycatcher" & season == "Winter")%>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RWFU_Winter<- art_bird %>% filter(SPECIES == "Rufous-winged Fulvetta" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-WHWA_Winter<- art_bird %>% filter(SPECIES == "Whistler's Warbler" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RBNI_Winter<- art_bird %>% filter(SPECIES == "Rufous-bellied Niltava" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BBWA_Winter<- art_bird %>% filter(SPECIES == "Buff-barred Warbler" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-# Creating an array of migrant species
-mig_art<-list(BBWA_Summer = BBWA_Summer, CHTE_Summer = CHTE_Summer,RBNI_Summer = RBNI_Summer,RGFL_Summer = RGFL_Summer,RWFU_Summer = RWFU_Summer,WHWA_Summer = WHWA_Summer, BBWA_Winter = BBWA_Winter, CHTE_Winter = CHTE_Winter,RBNI_Winter = RBNI_Winter,RGFL_Winter=RGFL_Winter,RWFU_Winter=RWFU_Winter,WHWA_Winter=WHWA_Winter)
-
-# Creating an array of all species
-all<-list(BTFU_Summer = BTFU_Summer,RCBA_Summer = RCBA_Summer,RVYU_Summer = RVYU_Summer,SBSB_Summer = SBSB_Summer,STYU_Summer = STYU_Summer,BTFU_Winter = BTFU_Winter,RCBA_Winter = RCBA_Winter,RVYU_Winter=RVYU_Winter,SBSB_Winter=SBSB_Winter,STYU_Winter=STYU_Winter,BBWA_Summer = BBWA_Summer,CHTE_Summer = CHTE_Summer,RBNI_Summer = RBNI_Summer,RGFL_Summer = RGFL_Summer,RWFU_Summer = RWFU_Summer,WHWA_Summer = WHWA_Summer,BBWA_Winter = BBWA_Winter,CHTE_Winter = CHTE_Winter,RBNI_Winter = RBNI_Winter,RGFL_Winter=RGFL_Winter,RWFU_Winter=RWFU_Winter,WHWA_Winter=WHWA_Winter)
-
-# Arthropod order presence and absence in summer and winter in High-elevation residents on the whole
-HEres_Summer<- art_bird %>% filter(mig == "HE_res" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-HEres_Winter<- art_bird %>% filter(mig == "HE_res" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-# Arthropod order presence and absence in summer and winter in elevational migrants on the whole
-mig_Summer<- art_bird %>% filter(mig == "mig" & season == "Summer") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-mig_Winter<- art_bird %>% filter(mig == "mig" & season == "Winter") %>% mutate(across(c(2:25),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:25)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-# Creating an array of all migratory strategies
-all_merged_art<-list(Resident_Summer=HEres_Summer,Resident_Winter=HEres_Winter,Migrant_Summer=mig_Summer,Migrant_Winter=mig_Winter)
-
-# Estimating richness using hill numbers
-# Create a final table with estimated arthropod order richness at the species level and community level
-set.seed(47)
-DA_res<-estimateD(HE_res_art, datatype = 'incidence_raw', q = 0, base = "size")
-DA_mig<-estimateD(mig_art, datatype = 'incidence_raw', q = 0, base = "size")
-DA_res$mig<-"Resident"
-DA_mig$mig<-"Migrant"
-DA_res<- DA_res %>% separate(Assemblage, c('Species', 'Season'))
-DA_mig<- DA_mig %>% separate(Assemblage, c('Species', 'Season'))
-DA<-estimateD(all_merged_art, datatype = 'incidence_raw', q = 0, base = "size")
-DA<- DA %>% separate(Assemblage, c('mig', 'Season'))
-DA$Species<-"All Species"
-DA_SP<-rbind(DA_res,DA_mig,DA)
-DA_SP$mig <- factor(DA_SP$mig, levels=c("Resident", "Migrant"))
-
-# Barplots of estimated arthropod order richness
-Order_art<-ggplot(DA_SP, aes(Species, qD, fill = Season))+
-  geom_bar(stat = "identity", position = position_dodge()) +
-  geom_errorbar(aes(ymin = qD.LCL, ymax = qD.UCL), width=.2, position = position_dodge(0.9))+
-  facet_wrap(~mig, scales = "free_x", nrow = 2)+
-  labs(title = "Number of Arthropod Orders",
-       y = "Estimated Richness") +
-  theme_minimal(base_size = 12)+
-  scale_fill_grey(start = 0.3,
-                  end = 0.7)+
-  theme(plot.title = element_text(hjust = 0.5))
-
-
-##### Number of arthropod orders in each sample - min, max, mean
-art_bird$order_no<-rowSums(art_bird[,c(2:25)] != 0)
-
-art_order_avg<-art_bird %>% group_by(SPECIES,season) %>% summarise(order_num = mean(order_no), CI = 1.96*(sd(order_no)/sqrt(n())), n= n())  %>% filter(n>5)
-
-
-####### Estimating plant family richness across species and season
-
-## Resident species - plant family presence and absence in summer and winter
-BTFU_Summer<- pln_bird_family %>% filter(SPECIES == "Brown-throated Fulvetta" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-RCBA_Summer<- pln_bird_family %>% filter(SPECIES == "Rufous-capped Babbler" & season == "Summer")%>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RVYU_Summer<- pln_bird_family %>% filter(SPECIES == "Rufous-vented Yuhina" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-SBSB_Summer<- pln_bird_family %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-STYU_Summer<- pln_bird_family %>% filter(SPECIES == "Stripe-throated Yuhina" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BTFU_Winter<- pln_bird_family %>% filter(SPECIES == "Brown-throated Fulvetta" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RCBA_Winter<- pln_bird_family %>% filter(SPECIES == "Rufous-capped Babbler" & season == "Winter")%>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RVYU_Winter<- pln_bird_family %>% filter(SPECIES == "Rufous-vented Yuhina" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-SBSB_Winter<- pln_bird_family %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-STYU_Winter<- pln_bird_family %>% filter(SPECIES == "Stripe-throated Yuhina" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-# Creating an array of resident species
-HE_res_pln<-list(BTFU_Summer = BTFU_Summer,RCBA_Summer = RCBA_Summer,RVYU_Summer = RVYU_Summer,SBSB_Summer = SBSB_Summer,STYU_Summer = STYU_Summer,BTFU_Winter = BTFU_Winter,RCBA_Winter = RCBA_Winter,RVYU_Winter=RVYU_Winter,SBSB_Winter=SBSB_Winter,STYU_Winter=STYU_Winter)
-
-
-## Migrant species - plant family presence and absence in summer and winter
-CHTE_Summer<- pln_bird_family %>% filter(SPECIES == "Chestnut-headed Tesia" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-RBNI_Summer<- pln_bird_family %>% filter(SPECIES == "Rufous-bellied Niltava" & season == "Summer")%>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RGFL_Summer<- pln_bird_family %>% filter(SPECIES == "Rufous-gorgeted Flycatcher" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RWFU_Summer<- pln_bird_family %>% filter(SPECIES == "Rufous-winged Fulvetta" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-WHWA_Summer<- pln_bird_family %>% filter(SPECIES == "Whistler's Warbler" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BBWA_Summer<- pln_bird_family %>% filter(SPECIES == "Buff-barred Warbler" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-CHTE_Winter<- pln_bird_family %>% filter(SPECIES == "Chestnut-headed Tesia" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RGFL_Winter<- pln_bird_family %>% filter(SPECIES == "Rufous-gorgeted Flycatcher" & season == "Winter")%>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RWFU_Winter<- pln_bird_family %>% filter(SPECIES == "Rufous-winged Fulvetta" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-WHWA_Winter<- pln_bird_family %>% filter(SPECIES == "Whistler's Warbler" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RBNI_Winter<- pln_bird_family %>% filter(SPECIES == "Rufous-bellied Niltava" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BBWA_Winter<- pln_bird_family %>% filter(SPECIES == "Buff-barred Warbler" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-# Creating an array of migrant species
-mig_pln<-list(BBWA_Summer = BBWA_Summer, CHTE_Summer = CHTE_Summer,RBNI_Summer = RBNI_Summer,RGFL_Summer = RGFL_Summer,RWFU_Summer = RWFU_Summer,WHWA_Summer = WHWA_Summer, BBWA_Winter = BBWA_Winter, CHTE_Winter = CHTE_Winter,RBNI_Winter = RBNI_Winter,RGFL_Winter=RGFL_Winter,RWFU_Winter=RWFU_Winter,WHWA_Winter=WHWA_Winter)
-
-# Plant family presence and absence in summer and winter in High-elevation residents on the whole
-HEres_Summer<- pln_bird_family %>% filter(mig == "HE_res" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-HEres_Winter<- pln_bird_family %>% filter(mig == "HE_res" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-# Plant family presence and absence in summer and winter in elevational migrants on the whole
-mig_Summer<- pln_bird_family %>% filter(mig == "mig" & season == "Summer") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-mig_Winter<- pln_bird_family %>% filter(mig == "mig" & season == "Winter") %>% mutate(across(c(2:103),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:103)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-# Creating an array of all migratory strategies
-all_merged_pln<-list(Resident_Summer=HEres_Summer,Resident_Winter=HEres_Winter,Migrant_Summer=mig_Summer,Migrant_Winter=mig_Winter)
-
-# Estimating richness using hill numbers
-# Create a final table with estimated plant family richness at the species level and community level
-set.seed(47)
-DP_res<-estimateD(HE_res_pln, datatype = 'incidence_raw', q = 0, base = "size")
-DP_mig<-estimateD(mig_pln, datatype = 'incidence_raw', q = 0, base = "size")
-DP_res$mig<-"Resident"
-DP_mig$mig<-"Migrant"
-DP_res<- DP_res %>% separate(Assemblage, c('Species', 'Season'))
-DP_mig<- DP_mig %>% separate(Assemblage, c('Species', 'Season'))
-DP<-estimateD(all_merged_pln, datatype = 'incidence_raw', q = 0, base = "size")
-DP<- DP %>% separate(Assemblage, c('mig', 'Season'))
-DP$Species<-"All Species"
-DP_SP<-rbind(DP_res,DP_mig,DP)
-DP_SP$mig <- factor(DP_SP$mig, levels=c("Resident", "Migrant"))
-
-# Barplots of estimated plant family richness
-Family_pln<-ggplot(DP_SP, aes(Species, qD, fill = Season))+
-  geom_bar(stat = "identity", position = position_dodge()) +
-  geom_errorbar(aes(ymin = qD.LCL, ymax = qD.UCL), width=.2, position = position_dodge(0.9))+
-  facet_wrap(~mig, scales = "free_x", nrow = 2)+
-  labs(title = "Number of Plant Families",
-       y = "Estimated Richness") +
-  theme_minimal(base_size = 12)+
-  scale_fill_grey(start = 0.3,
-                  end = 0.7)+
-  theme(plot.title = element_text(hjust = 0.5))
-
-##### Number of plant familes in each sample - min, max, mean
-pln_bird_family$family_no<-rowSums(pln_bird_family[,c(2:103)] != 0)
-
-pln_fam_avg<-pln_bird_family%>% group_by(SPECIES,season) %>% summarise(family_no = mean(family_no), CI = 1.96*(sd(family_no)/sqrt(n())), n= n())  %>% filter(n>5) 
-
-
-####### Estimating arthropod ASV richness across species and season
-
-# Create the summary table of counts of each arthropod ASV in each sample
-# Fix typos in sample names
-result_art_asv <- art_non_zero %>%
-  group_by(ID, ASV) %>%
-  summarise(Count = sum(Count), .groups = 'drop') %>%
-  pivot_wider(names_from = ASV, values_from = Count, values_fill = 0) %>% mutate(ID= recode(ID, "Z2662"="A2662", "A2584" = "Z2584", "A1297"="AB1297", "A2591"="Z2591", "A2594.25422" = "A2690", "A2593"="Z2593",  "A2598"="Z2598",  "A2599"="Z2599", "Z2388" = "A2883", "A1739_10124"="AB1739_10124", "A8224_19124" = "A8224_14124", "A8233_16124"="A8233_15124", "A8317_1224"="Z8317_1224","AB1179_16124" = "AB1179_161223",  "Z5093_19124"="Z5092_19124", "Z5019_22124" = "Z2711_23522",  "A3700_22323"="A3700_22523","A3841_22523" =  "Z3841_22523", "A3865_23523" = "Z3865_23523", "A5119_20124" = "Z5119_20124","Z5152_1224" = "Z2513_30422", "AB0525_18523" = "AB0525_19523", "Z3632_6523" = "A3632_6523", "A3606_18523"="Z3806_18523", "A269807_25422" = "A269087_25422", "AB0373_26422" = "AB0373_26423", "Z2604_5622" = "Z2604_5522", "Z2605_6522"= "Z2605_5522", "Z2612_5622"= "Z2612_5522", "Z3428_26422" = "Z3428_26423", "A3110_141222" = "A3110_151222", "A3165_7123" = "A3165_8123", "A5004_121223" = "A5104_121223","A5200_7124" = "A5200_8124"))
-
-# Merge with ringing and guild data
-art_bird_asv<- left_join(result_art_asv,samples_date22) %>% mutate(ID = str_remove(ID, "\\..*"))
-art_bird_asv$ID <- ifelse(is.na(art_bird_asv$DATE), art_bird_asv$ID, paste0(art_bird_asv$ID, "_",sub("^0", "", sub("^(\\d+)-0?(\\d+)-(\\d{2})(\\d{2})$", "\\1\\2\\4", art_bird_asv$DATE))))
-art_bird_asv<-art_bird_asv%>% left_join(bird_data, by = "ID") %>% left_join(guilds)
-
-## Resident species - Arthropod ASV presence and absence in summer and winter
-BTFU_Summer<- art_bird_asv %>% filter(SPECIES == "Brown-throated Fulvetta" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-RCBA_Summer<- art_bird_asv %>% filter(SPECIES == "Rufous-capped Babbler" & season == "Summer")%>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RVYU_Summer<- art_bird_asv %>% filter(SPECIES == "Rufous-vented Yuhina" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-SBSB_Summer<- art_bird_asv %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-STYU_Summer<- art_bird_asv %>% filter(SPECIES == "Stripe-throated Yuhina" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BTFU_Winter<- art_bird_asv %>% filter(SPECIES == "Brown-throated Fulvetta" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RCBA_Winter<- art_bird_asv %>% filter(SPECIES == "Rufous-capped Babbler" & season == "Winter")%>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RVYU_Winter<- art_bird_asv %>% filter(SPECIES == "Rufous-vented Yuhina" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-SBSB_Winter<- art_bird_asv %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-STYU_Winter<- art_bird_asv %>% filter(SPECIES == "Stripe-throated Yuhina" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-HE_res_art<-list(BTFU_Summer = BTFU_Summer,RCBA_Summer = RCBA_Summer,RVYU_Summer = RVYU_Summer,SBSB_Summer = SBSB_Summer,STYU_Summer = STYU_Summer,BTFU_Winter = BTFU_Winter,RCBA_Winter = RCBA_Winter,RVYU_Winter=RVYU_Winter,SBSB_Winter=SBSB_Winter,STYU_Winter=STYU_Winter)
-
-## Migrant species - Arthropod ASV presence and absence in summer and winter
-CHTE_Summer<- art_bird_asv %>% filter(SPECIES == "Chestnut-headed Tesia" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-RBNI_Summer<- art_bird_asv %>% filter(SPECIES == "Rufous-bellied Niltava" & season == "Summer")%>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RGFL_Summer<- art_bird_asv %>% filter(SPECIES == "Rufous-gorgeted Flycatcher" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RWFU_Summer<- art_bird_asv %>% filter(SPECIES == "Rufous-winged Fulvetta" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-WHWA_Summer<- art_bird_asv %>% filter(SPECIES == "Whistler's Warbler" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BBWA_Summer<- art_bird_asv %>% filter(SPECIES == "Buff-barred Warbler" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-CHTE_Winter<- art_bird_asv %>% filter(SPECIES == "Chestnut-headed Tesia" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RGFL_Winter<- art_bird_asv %>% filter(SPECIES == "Rufous-gorgeted Flycatcher" & season == "Winter")%>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RWFU_Winter<- art_bird_asv %>% filter(SPECIES == "Rufous-winged Fulvetta" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-WHWA_Winter<- art_bird_asv %>% filter(SPECIES == "Whistler's Warbler" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RBNI_Winter<- art_bird_asv %>% filter(SPECIES == "Rufous-bellied Niltava" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BBWA_Winter<- art_bird_asv %>% filter(SPECIES == "Buff-barred Warbler" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-mig_art<-list(BBWA_Summer = BBWA_Summer, CHTE_Summer = CHTE_Summer,RBNI_Summer = RBNI_Summer,RGFL_Summer = RGFL_Summer,RWFU_Summer = RWFU_Summer,WHWA_Summer = WHWA_Summer, BBWA_Winter = BBWA_Winter, CHTE_Winter = CHTE_Winter,RBNI_Winter = RBNI_Winter,RGFL_Winter=RGFL_Winter,RWFU_Winter=RWFU_Winter,WHWA_Winter=WHWA_Winter)
-
-# Arthropod ASV presence and absence in summer and winter in High-elevation residents on the whole
-HEres_Summer<- art_bird_asv %>% filter(mig == "HE_res" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-HEres_Winter<- art_bird_asv %>% filter(mig == "HE_res" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-# Arthropod ASV presence and absence in summer and winter in elevational migrants on the whole
-mig_Summer<- art_bird_asv %>% filter(mig == "mig" & season == "Summer") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-mig_Winter<- art_bird_asv %>% filter(mig == "mig" & season == "Winter") %>% mutate(across(c(2:3010),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:3010)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-all_merged_art<-list(Resident_Summer=HEres_Summer,Resident_Winter=HEres_Winter,Migrant_Summer=mig_Summer,Migrant_Winter=mig_Winter)
-
-# Estimating richness using hill numbers
-# Create a final table with estimated arthropod ASV richness at the species level and community level
-set.seed(47)
-DA_res<-estimateD(HE_res_art, datatype = 'incidence_raw', q = 0, base = "size")
-DA_mig<-estimateD(mig_art, datatype = 'incidence_raw', q = 0, base = "size")
-DA_res$mig<-"Resident"
-DA_mig$mig<-"Migrant"
-DA_res<- DA_res %>% separate(Assemblage, c('Species', 'Season'))
-DA_mig<- DA_mig %>% separate(Assemblage, c('Species', 'Season'))
-DA<-estimateD(all_merged_art, datatype = 'incidence_raw', q = 0, base = "size")
-DA<- DA %>% separate(Assemblage, c('mig', 'Season'))
-DA$Species<-"All Species"
-DA_SP<-rbind(DA_res,DA_mig,DA)
-DA_SP$mig <- factor(DA_SP$mig, levels=c("Resident", "Migrant"))
-
-# Barplots of estimated arthropod ASV richness
-ASV_art<-ggplot(DA_SP, aes(Species, qD, fill = Season))+
-  geom_bar(stat = "identity", position = position_dodge()) +
-  geom_errorbar(aes(ymin = qD.LCL, ymax = qD.UCL), width=.2, position = position_dodge(0.9))+
-  facet_wrap(~mig, scales = "free_x", nrow = 2)+
-  labs(title = "Number of Arthropod ASVs",
-       y = "Estimated Richness") +
-  theme_minimal(base_size = 12)+
-  scale_fill_grey(start = 0.3,
-                  end = 0.7)+
-  theme(plot.title = element_text(hjust = 0.5))
-
-##### Number of arthropod ASVs in each sample - min, max, mean
-art_bird_asv$asv<-rowSums(art_bird_asv[,c(2:3010)] != 0)
-
-art_asv_avg<-art_bird_asv %>% group_by(SPECIES,season) %>% summarise(asv_no = mean(asv), CI = 1.96*(sd(asv)/sqrt(n())), n= n())  %>% filter(n>5)
-
-
-####### Estimating plant ASV richness across species and season
-
-# Create the summary table of counts of each plant ASV in each sample
-# Fix typos in sample names
-result_pln_asv <- plnF_non_zero %>%
-  group_by(ID, ASV) %>%
-  summarise(Count = sum(Count), .groups = 'drop') %>%
-  pivot_wider(names_from = ASV, values_from = Count, values_fill = 0) %>% mutate(ID= recode(ID, "Z2662"="A2662", "A2584" = "Z2584", "A1297"="AB1297", "A2591"="Z2591", "A2594.25422" = "A2690", "A2593"="Z2593",  "A2598"="Z2598",  "A2599"="Z2599", "Z2388" = "A2883", "A1739_10124"="AB1739_10124", "A8224_19124" = "A8224_14124", "A8233_16124"="A8233_15124", "A8317_1224"="Z8317_1224","AB1179_16124" = "AB1179_161223",  "Z5093_19124"="Z5092_19124", "Z5019_22124" = "Z2711_23522",  "A3700_22323"="A3700_22523","A3841_22523" =  "Z3841_22523", "A3865_23523" = "Z3865_23523", "A5119_20124" = "Z5119_20124","Z5152_1224" = "Z2513_30422", "AB0525_18523" = "AB0525_19523", "Z3632_6523" = "A3632_6523", "A3606_18523"="Z3806_18523", "A269807_25422" = "A269087_25422", "AB0373_26422" = "AB0373_26423", "Z2604_5622" = "Z2604_5522", "Z2605_6522"= "Z2605_5522", "Z2612_5622"= "Z2612_5522", "Z3428_26422" = "Z3428_26423", "A3110_141222" = "A3110_151222", "A3165_7123" = "A3165_8123", "A5004_121223" = "A5104_121223","A5200_7124" = "A5200_8124"))
-
-# Merge with ringing and guild data
-pln_bird_asv<- left_join(result_pln_asv,samples_date22) %>% mutate(ID = str_remove(ID, "\\..*"))
-pln_bird_asv$ID <- ifelse(is.na(pln_bird_asv$DATE), pln_bird_asv$ID, paste0(pln_bird_asv$ID, "_",sub("^0", "", sub("^(\\d+)-0?(\\d+)-(\\d{2})(\\d{2})$", "\\1\\2\\4", pln_bird_asv$DATE))))
-pln_bird_asv<-pln_bird_asv%>% left_join(bird_data, by = "ID") %>% left_join(guilds)
-
-## Resident species - plant ASV presence and absence in summer and winter
-BTFU_Summer<- pln_bird_asv %>% filter(SPECIES == "Brown-throated Fulvetta" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-RCBA_Summer<- pln_bird_asv %>% filter(SPECIES == "Rufous-capped Babbler" & season == "Summer")%>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RVYU_Summer<- pln_bird_asv %>% filter(SPECIES == "Rufous-vented Yuhina" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-SBSB_Summer<- pln_bird_asv %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-STYU_Summer<- pln_bird_asv %>% filter(SPECIES == "Stripe-throated Yuhina" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BTFU_Winter<- pln_bird_asv %>% filter(SPECIES == "Brown-throated Fulvetta" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RCBA_Winter<- pln_bird_asv %>% filter(SPECIES == "Rufous-capped Babbler" & season == "Winter")%>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RVYU_Winter<- pln_bird_asv %>% filter(SPECIES == "Rufous-vented Yuhina" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-SBSB_Winter<- pln_bird_asv %>% filter(SPECIES == "Streak-breasted Scimitar-Babbler" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-STYU_Winter<- pln_bird_asv %>% filter(SPECIES == "Stripe-throated Yuhina" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-HE_res_pln<-list(BTFU_Summer = BTFU_Summer,RCBA_Summer = RCBA_Summer,RVYU_Summer = RVYU_Summer,SBSB_Summer = SBSB_Summer,STYU_Summer = STYU_Summer,BTFU_Winter = BTFU_Winter,RCBA_Winter = RCBA_Winter,RVYU_Winter=RVYU_Winter,SBSB_Winter=SBSB_Winter,STYU_Winter=STYU_Winter)
-
-## Migrant species - plant ASV presence and absence in summer and winter
-CHTE_Summer<- pln_bird_asv %>% filter(SPECIES == "Chestnut-headed Tesia" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-RBNI_Summer<- pln_bird_asv %>% filter(SPECIES == "Rufous-bellied Niltava" & season == "Summer")%>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RGFL_Summer<- pln_bird_asv %>% filter(SPECIES == "Rufous-gorgeted Flycatcher" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RWFU_Summer<- pln_bird_asv %>% filter(SPECIES == "Rufous-winged Fulvetta" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-WHWA_Summer<- pln_bird_asv %>% filter(SPECIES == "Whistler's Warbler" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BBWA_Summer<- pln_bird_asv %>% filter(SPECIES == "Buff-barred Warbler" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-CHTE_Winter<- pln_bird_asv %>% filter(SPECIES == "Chestnut-headed Tesia" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RGFL_Winter<- pln_bird_asv %>% filter(SPECIES == "Rufous-gorgeted Flycatcher" & season == "Winter")%>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RWFU_Winter<- pln_bird_asv %>% filter(SPECIES == "Rufous-winged Fulvetta" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-WHWA_Winter<- pln_bird_asv %>% filter(SPECIES == "Whistler's Warbler" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-RBNI_Winter<- pln_bird_asv %>% filter(SPECIES == "Rufous-bellied Niltava" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-BBWA_Winter<- pln_bird_asv %>% filter(SPECIES == "Buff-barred Warbler" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-mig_pln<-list(BBWA_Summer = BBWA_Summer, CHTE_Summer = CHTE_Summer,RBNI_Summer = RBNI_Summer,RGFL_Summer = RGFL_Summer,RWFU_Summer = RWFU_Summer,WHWA_Summer = WHWA_Summer, BBWA_Winter = BBWA_Winter, CHTE_Winter = CHTE_Winter,RBNI_Winter = RBNI_Winter,RGFL_Winter=RGFL_Winter,RWFU_Winter=RWFU_Winter,WHWA_Winter=WHWA_Winter)
-
-# Plant ASV presence and absence in summer and winter in High-elevation residents on the whole
-HEres_Summer<- pln_bird_asv %>% filter(mig == "HE_res" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-HEres_Winter<- pln_bird_asv %>% filter(mig == "HE_res" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-# Plant ASV presence and absence in summer and winter in elevational migrants on the whole
-mig_Summer<- pln_bird_asv %>% filter(mig == "mig" & season == "Summer") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0)) 
-mig_Winter<- pln_bird_asv %>% filter(mig == "mig" & season == "Winter") %>% mutate(across(c(2:421),  ~ ifelse(. > 0, 1, .))) %>%select(c(2:421)) %>% t() %>% as.data.frame() %>% filter_all(any_vars(. != 0))
-
-all_merged_pln<-list(Resident_Summer=HEres_Summer,Resident_Winter=HEres_Winter,Migrant_Summer=mig_Summer,Migrant_Winter=mig_Winter)
-
-# Estimating richness using hill numbers
-# Create a final table with estimated plant ASV richness at the species level and community level
-set.seed(47)
-DP_res<-estimateD(HE_res_pln, datatype = 'incidence_raw', q = 0, base = "size")
-DP_mig<-estimateD(mig_pln, datatype = 'incidence_raw', q = 0, base = "size")
-DP_res$mig<-"Resident"
-DP_mig$mig<-"Migrant"
-DP_res<- DP_res %>% separate(Assemblage, c('Species', 'Season'))
-DP_mig<- DP_mig %>% separate(Assemblage, c('Species', 'Season'))
-DP<-estimateD(all_merged_pln, datatype = 'incidence_raw', q = 0, base = "size")
-DP<- DP %>% separate(Assemblage, c('mig', 'Season'))
-DP$Species<-"All Species"
-DP_SP<-rbind(DP_res,DP_mig,DP)
-DP_SP$mig <- factor(DP_SP$mig, levels=c("Resident", "Migrant"))
-
-# Barplots of estimated plant ASV richness
-ASV_pln<-ggplot(DP_SP, aes(Species, qD, fill = Season))+
-  geom_bar(stat = "identity", position = position_dodge()) +
-  geom_errorbar(aes(ymin = qD.LCL, ymax = qD.UCL), width=.2, position = position_dodge(0.9))+
-  facet_wrap(~mig, scales = "free_x", nrow = 2)+
-  labs(title = "Number of Plant ASVs",
-       y = "Estimated Richness") +
-  theme_minimal(base_size = 12)+
-  scale_fill_grey(start = 0.3,
-                  end = 0.7)+
-  theme(plot.title = element_text(hjust = 0.5))
-
-#### Number of plant ASVs in each sample - min, max, mean
-pln_bird_asv$asv<-rowSums(pln_bird_asv[,c(2:421)] != 0)
-
-pln_asv_avg<-pln_bird_asv %>% group_by(SPECIES,season) %>% summarise(asv_no = mean(asv), CI = 1.96*(sd(asv)/sqrt(n())), n= n())  %>% filter(n>5) 
-
-### Plotting all 4 sets of barplots - Supplementary figure 2
-art_div<-ggarrange(ASV_art,Order_art, common.legend = T, ncol = 2, legend =  "right")
-
-pln_div<-ggarrange(ASV_pln,Family_pln, common.legend = T, ncol = 2, legend =  "right")
-
-com_div<-ggarrange(art_div,pln_div, common.legend = T, nrow = 2, legend =  "right", labels = c("A", "B"))
-
-#ggsave(plot = com_div, "FigS2.jpeg", width = 11, height = 9)

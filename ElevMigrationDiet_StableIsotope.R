@@ -3,9 +3,13 @@
 library(tidyverse)
 library(scales)
 library(SIBER)
-library(tRophicPosition)
 library(nicheROVER)
 library(ggpubr)
+library(brms)
+library(ape)
+library(marginaleffects)
+library(purrr)
+library(broom.mixed)
 `%ni%` <- Negate(`%in%`)
 cbbPalette <- c("#D55E00", "#56B4E9","#000000", "#CC79A7","#009E73", "#E69F00", "#4B0092", "#0072B2","#DC3220" )
 
@@ -66,142 +70,171 @@ bird$DAY<-as.numeric(bird$DAY)
 bird$MONTH<-as.numeric(bird$MONTH)
 bird$Season<-ifelse(bird$MONTH == 4 | bird$MONTH == 5, "Summer", "Winter") #Defining seasons
 
+setwd("E:/IISC/Global_Change_Lab/Data")
+
 #load data linking date and ring number to isotope data
-ring_sp<-read.csv("ring_numbers.csv") %>% select(-DATE)
+ring_sp<-read.csv("ring_number_sci.csv")
 
 #Loading guild data and merging
-guild<-read.csv("E:/IISC/Global_Change_Lab/Data/DNA_metabarcoding/guilds.csv")
+guild<-read.csv("guilds.csv")
 bird_data<-left_join(ring_sp,guild)
 
-birdiso<-left_join(bird,bird_data, relationship = "many-to-many")
+birdiso<-left_join(bird,bird_data)
 
 #renaming variables for ease of plotting
 birdiso <- birdiso %>% mutate(mig = recode(mig,  "HE_res" = "Resident"))%>% mutate(mig = recode(mig, "mig" = "Migrant")) %>% filter (mig != "LE_res")
 
-#Categorising elevation for Trophic Position calculation
-birdiso$elevcat <- ifelse(birdiso$ELEV > 1900, "high", ifelse(birdiso$ELEV > 500 & birdiso$ELEV < 1400, "low", NA))
-
-
 plant<-plant %>% separate_wider_delim(Sample.name, delim = "-", names = c("ELEV", "sample"), too_many = "merge")
 plant$ELEV<-as.numeric(plant$ELEV)
-
-#Categorising elevation for Trophic Position calculation
-plant$elevcat<-ifelse(plant$ELEV > 2000, "high", ifelse(plant$ELEV > 500 & plant$ELEV < 1400, "low", NA))
 
 
 ### Estimating Trophic Position
 
-## Putting bird and baseline (plant) isotope values in the same dataframe that can be analysed using the package tRophicPosition
-plant_base<-plant %>% select(c(sample,elevcat,d13C,d15N))
-plant_base$FG<-"Plant"
-birdiso_all<-birdiso %>% mutate(sample = paste(mig, "_",Season, sep="")) %>% select(c(sample,elevcat,d13C,d15N))
-birdiso_all$FG<-"Bird"
-all_pl<-rbind(birdiso_all,plant_base)
-all_pl<-as.data.frame(all_pl)
 
-# Formatting the data for tRophicPosition
-# Trophic Discrimination Factor was simulated using a mean of 2.3 and SD of 0.3
-all_list<-extractIsotopeData(all_pl, b1 = "Plant", baselineColumn = "FG", consumersColumn = "sample", groupsColumn = "elevcat", d13C = "d13C", d15N = "d15N", deltaN = simulateTDF(nN = length(all_pl$sample), meanN = 2.3, sdN = 0.3, seed = 3))
+#######################
+#Estimating trophic positions of all Species in a single model
 
-# Estimating trophic position
-all_models <- multiSpeciesTP(all_list, lambda = 1,
-                             n.adapt = 10000, n.iter = 10000,
-                             burnin = 10000, print = FALSE)
+birdiso$elevcat <- ifelse(birdiso$ELEV > 2200, "high", ifelse(birdiso$ELEV > 1500 & birdiso$ELEV < 2300, "mid", ifelse(birdiso$ELEV > 500 & birdiso$ELEV < 1400, "low", NA)))
 
-# Putting the results in a dataframe be platted later
-plot_all<-all_models$df %>% separate_wider_delim(consumer, delim = "_", names = c("mig", "Season"))
-plot_all$mig <- factor(plot_all$mig, levels=c("Resident", "Migrant"))
-plot_all$Species<-"All Species"
+plant$elevcat<-ifelse(plant$ELEV > 2200, "high", ifelse(plant$ELEV > 1500 & plant$ELEV < 2300, "mid", ifelse(plant$ELEV > 500 & plant$ELEV < 1400, "low", NA)))
 
-# Calculating the probability that resident have a higher trophic position in the summer compared to the winter
-pres<-compareTwoDistributions(all_models$TPs$high.Resident_Summer.1b, all_models$TPs$high.Resident_Winter.1b, test = ">")
+baselines<-plant %>% group_by(elevcat) %>% summarise(d15N_base = mean(d15N), d13C_base = mean(d13C), d13C_min = min(d13C), d13C_max = max(d13C), SE_N = sd(d15N)/sqrt(n()), SE_C = sd(d13C)/sqrt(n()))
 
-# Calculating the probability that migrant have a higher trophic position in the winter compared to the summer
-pmig<-compareTwoDistributions(all_models$TPs$high.Migrant_Summer.1b, all_models$TPs$low.Migrant_Winter.1b, test = "<")
+birdiso_base<-left_join(birdiso,baselines)
+birdiso_base<- birdiso_base %>%
+  mutate(SCI_NAME = str_replace_all(Species, " ", "_"))
+birdiso_base$TP<-1 + (birdiso_base$d15N - birdiso_base$d15N_base)/2.3
 
-# Calculating the probability that residents had a higher summer trophic position than migrants
-pres2<-compareTwoDistributions(all_models$TPs$high.Migrant_Summer.1b, all_models$TPs$high.Resident_Summer.1b, test = "<")
+# first-order Taylor series expansion for error propagation
+birdiso_base$TP_se <- sqrt( (birdiso_base$SE_N^2 / 2.3^2) + 
+                              (((birdiso_base$d15N - birdiso_base$d15N_base)^2 * 0.3^2) / (2.3^4)) )
+
+# get global bird phylogentic tree from Claramunt et al. (2026)
+github.directory <- "https://raw.githubusercontent.com/evolucionario/BigBirdTree/refs/heads/main/"
+
+stage <- "RAGBackbone/"
+
+tree <- "BBtreeC2022.tre"
+
+url <- paste0(github.directory, stage, tree)
+
+BBtree2 <- read.tree(url)
+
+# Replacing species in our dataset that are absent in the tree by replacing it with the next closely related species
+BBtree2$tip.label[BBtree2$tip.label == "Phylloscopus_burkii"] <- "Phylloscopus_whistleri"
+BBtree2$tip.label[BBtree2$tip.label == "Phylloscopus_inornatus"] <- "Phylloscopus_pulcher"
+
+tree_pruned <- keep.tip(BBtree2, birdiso_base$SCI_NAME)
+birdiso_base$phylo_id <- birdiso_base$SCI_NAME
+phylo_matrix <- vcv.phylo(tree_pruned, corr = TRUE)
+
+# running the bayesian multilevel phylogenetic regression
+fit_tp <- brm(
+  formula = TP | mi(TP_se) ~ mig*Season + (1 | gr(phylo_id, cov = phylo)),
+  data = birdiso_base,
+  data2 = list(phylo = phylo_matrix),
+  family = gaussian(),
+  prior = c(
+    prior(normal(3, 1), class = "Intercept"),
+    prior(normal(0, 0.5), class = "b")
+  ),
+  chains = 4, iter = 4000, cores = 4,
+  control = list(adapt_delta = 0.99)
+)
+
+summary(fit_tp)
+
+comparisons(fit_tp, variables = "Season", by = "mig")
 
 
-###############
-## Estimating trophic positions of Individual Species
+#####################
+## Species specific models
 
-## Resident species
-## Filter out species with not enough data
-birdiso_res<-birdiso %>% filter(mig == "Resident") %>%  filter(SPECIES %ni% c("Black-browed Tit", "Black-faced Laughingthrush")) %>% mutate(sample = paste(SPECIES, "_",Season, sep="")) %>% select(c(sample,elevcat,d13C,d15N))
-birdiso_res$FG<-"Bird"
+sep_species_preds <- birdiso_base %>% filter(SPECIES %in% c("Brown-throated Fulvetta", "Rufous-vented Yuhina", "Streak-breasted Scimitar-Babbler", "Stripe-throated Yuhina", "Rufous-capped Babbler", "Whistler's Warbler", "Rufous-gorgeted Flycatcher", "Chestnut-headed Tesia", "Rufous-winged Fulvetta", "Rufous-bellied Niltava", "Buff-barred Warbler")) %>%
+  group_by(SPECIES, mig) %>%
+  nest() %>%
+  mutate(model = map(data, ~brm(TP ~ Season, data = .x, 
+                                family = gaussian(), chains = 4, iter = 4000, cores = 4,
+                                prior = c(
+                                  prior(normal(3, 1), class = "Intercept"),
+                                  prior(normal(0, 0.5), class = "b")),
+                                control = list(adapt_delta = 0.99)))) 
 
-## Putting bird and baseline (plant) isotope values in the same dataframe that can be analysed using the package tRophicPosition
-res_pl<-rbind(birdiso_res,plant_base)
-res_pl<-as.data.frame(res_pl)
+species_stats <- sep_species_preds %>%
+  mutate(tidy_model = map(model, ~tidy(.x, effects = "fixed", conf.int = TRUE, rhat = TRUE, ess = TRUE))) %>%
+  unnest(tidy_model)
 
-# Formatting the data for tRophicPosition
-# Trophic Discrimination Factor was simulated using a mean of 2.3 and SD of 0.3
-res_list<-extractIsotopeData(res_pl, b1 = "Plant", baselineColumn = "FG", consumersColumn = "sample", groupsColumn = "elevcat", d13C = "d13C", d15N = "d15N", deltaN = simulateTDF(nN = length(res_pl$sample), meanN = 2.3, sdN = 0.3, seed = 3))
+# Creating model output table
+final_table <- species_stats %>%
+  mutate(
+    Parameter = case_when(
+      term == "(Intercept)" ~ "Summer TP (Intercept)",
+      term == "SeasonWinter" ~ "Winter Shift (Beta)",
+      TRUE ~ term
+    ),
+    `95% CI` = paste0("[", round(conf.low, 2), ", ", round(conf.high, 2), "]"),
+    Estimate = round(estimate, 2),
+    Rhat = round(rhat, 3),
+    ESS = round(ess, 0)
+  ) %>%
+  select(SPECIES, mig, Parameter, Estimate, `95% CI`, Rhat, ESS)
 
-# Estimating Trophic Position
-res_models <- multiSpeciesTP(res_list, lambda = 1,
-                             n.adapt = 10000, n.iter = 10000,
-                             burnin = 10000, print = FALSE)
+# Export for supplement
+#write.csv(final_table, "Table_S3.csv", row.names = FALSE)
 
-# Putting the results in a dataframe be platted later
-plot_res<-res_models$df %>% separate_wider_delim(consumer, delim = "_", names = c("Species", "Season"))
-plot_res$mig<-"Resident"
+############
+## Visualization (for Figure 1)
 
-# Calculating the probability that each resident species have a higher trophic position in the summer compared to the winter
-pBTFU<-compareTwoDistributions(res_models$TPs$high.Brown.throated.Fulvetta_Winter.1b, res_models$TPs$high.Brown.throated.Fulvetta_Summer.1b, test = "<")
-pRCBA<-compareTwoDistributions(res_models$TPs$high.Rufous.capped.Babbler_Winter.1b,res_models$TPs$high.Rufous.capped.Babbler_Summer.1b, test = "<")
-pRVYU<-compareTwoDistributions(res_models$TPs$high.Rufous.vented.Yuhina_Winter.1b,res_models$TPs$high.Rufous.vented.Yuhina_Summer.1b, test = "<")
-pSBSB<-compareTwoDistributions(res_models$TPs$high.Streak.breasted.Scimitar.Babbler_Winter.1b,res_models$TPs$high.Streak.breasted.Scimitar.Babbler_Summer.1b, test = "<")
-pSTYU<-compareTwoDistributions(res_models$TPs$high.Stripe.throated.Yuhina_Winter.1b,res_models$TPs$high.Stripe.throated.Yuhina_Summer.1b, test = "<")
+all_species_cond <- predictions(
+  fit_tp, 
+  newdata = datagrid(mig = unique, Season = unique), 
+  re_formula = NULL
+) %>%
+  as.data.frame() %>%
+  mutate(Species = "All Species") %>%
+  rename(Mean_TP = estimate, Lower = conf.low, Upper = conf.high) %>%
+  select(Species, mig, Season, Mean_TP, Lower, Upper)
 
-## migrant species
-birdiso_mig<-birdiso %>% filter(mig == "Migrant") %>% mutate(sample = paste(SPECIES, "_",Season, sep="")) %>% select(c(sample,elevcat,d13C,d15N))
-birdiso_mig$FG<-"Bird"
+sep_species_cond <- sep_species_preds %>%
+  mutate(preds = map(model, function(m) {
+    # Use datagrid to ensure it is a conditional prediction for that species
+    res <- predictions(m, newdata = datagrid(Season = c("Summer", "Winter"))) %>% 
+      as.data.frame()
+    return(res)
+  })) %>%
+  unnest(preds) %>%
+  mutate(Species = SPECIES) %>%
+  rename(Mean_TP = estimate, Lower = conf.low, Upper = conf.high) %>%
+  select(Species, SPECIES, mig, Season, Mean_TP, Lower, Upper)
 
-## Putting bird and baseline (plant) isotope values in the same dataframe that can be analysed using the package tRophicPosition
-mig_pl<-rbind(birdiso_mig,plant_base)
-mig_pl<-as.data.frame(mig_pl)
+ss<-birdiso_base %>% group_by(SPECIES, Season, mig) %>% summarise(count = n()) %>% rename(Species = SPECIES)
+ss_all<-birdiso_base %>% group_by(mig, Season) %>% summarise(count = n())
+ss_all$Species<- "All Species"
+ss<- rbind(ss,ss_all)
 
-# Formatting the data for tRophicPosition
-# Trophic Discrimination Factor was simulated using a mean of 2.3 and SD of 0.3
-mig_list<-extractIsotopeData(mig_pl, b1 = "Plant", baselineColumn = "FG", consumersColumn = "sample", groupsColumn = "elevcat", d13C = "d13C", d15N = "d15N", deltaN = simulateTDF(nN = length(mig_pl$sample), meanN = 2.3, sdN = 0.3, seed = 3))
+plot_data_final <- bind_rows(all_species_cond, sep_species_cond) %>%
+  mutate(
+    Species = factor(Species, levels = c("All Species", sort(unique(sep_species_cond$Species)))),
+    mig = factor(mig, levels = c("Resident", "Migrant"))
+  )%>%
+  left_join(ss, by = c("Species", "Season", "mig"))
 
-# Estimating Trophic Position
-mig_models <- multiSpeciesTP(mig_list, lambda = 1,
-                             n.adapt = 10000, n.iter = 10000,
-                             burnin = 10000, print = FALSE)
-
-# Putting the results in a dataframe be platted later
-plot_mig<-mig_models$df %>% separate_wider_delim(consumer, delim = "_", names = c("Species", "Season"))
-plot_mig$mig<-"Migrant"
-
-# Calculating the probability that each migrant species have a higher trophic position in the summer compared to the winter
-pBBWA<-compareTwoDistributions(mig_models$TPs$low.Buff.barred.Warbler_Winter.1b, mig_models$TPs$high.Buff.barred.Warbler_Summer.1b, test = ">")
-pCHTE<-compareTwoDistributions(mig_models$TPs$low.Chestnut.headed.Tesia_Winter.1b,mig_models$TPs$high.Chestnut.headed.Tesia_Summer.1b, test = ">")
-pRBNI<-compareTwoDistributions(mig_models$TPs$low.Rufous.bellied.Niltava_Winter.1b,mig_models$TPs$high.Rufous.bellied.Niltava_Summer.1b, test = ">")
-pRGFL<-compareTwoDistributions(mig_models$TPs$low.Rufous.gorgeted.Flycatcher_Winter.1b,mig_models$TPs$high.Rufous.gorgeted.Flycatcher_Summer.1b, test = ">")
-pRWFU<-compareTwoDistributions(mig_models$TPs$low.Rufous.winged.Fulvetta_Winter.1b,mig_models$TPs$high.Rufous.winged.Fulvetta_Summer.1b, test = ">")
-pWHWA<-compareTwoDistributions(mig_models$TPs$low.Whistler.s.Warbler_Winter.1b,mig_models$TPs$high.Whistler.s.Warbler_Summer.1b, test = ">")
-
-# putting all result dataframes together for plotting
-plot_3<-rbind(plot_res,plot_mig, plot_all)
-plot_3$mig<-factor(plot_3$mig, levels = c("Resident", "Migrant"))
-
-# Creating seasonal trophic position plot - Figure 2
-TP_Bay_all <- plot_3 %>% 
-  ggplot(aes(Species, median, colour = Season)) + 
+TP_Bay_all<-ggplot(plot_data_final, aes(x = Species, y = Mean_TP, color = Season)) +
   geom_point(size = 3,position = position_dodge(width = 0.25)) + 
-  geom_errorbar(aes(ymin = lower, ymax = upper), position = position_dodge(width = 0.25), width = 0) + 
-  ylab("Posterior Trophic Position") +
-  theme(axis.title = element_text(size =20), legend.title = element_text(size =15), legend.text = element_text(size =12), axis.text = element_text(size =12))+ 
-  scale_x_discrete(labels = wrap_format(10)) + 
-  scale_colour_grey(start = 0,
-                    end = 0.7)+
-  theme_bw(base_size = 12)+
-  facet_wrap(~mig,  ncol=1, scales = "free")
+  geom_errorbar(aes(ymin = Lower, ymax = Upper), position = position_dodge(width = 0.25), width = 0) + 
+  ylab("Estimated Trophic Position") +
+  geom_text(aes(label = count, group = Season), 
+            position = position_dodge(width = 0.75), 
+            vjust = -3, size = 3.5, color = "black")+
+  theme_bw()+
+  theme(axis.title = element_text(size =15), legend.title = element_text(size =20), legend.text = element_text(size =15), axis.text = element_text(size =11), strip.text = element_text(size = 15))+ 
+  scale_x_discrete(labels = wrap_format(10)) +
+  facet_wrap(~mig,  ncol=1, scales = "free") +
+  scale_colour_manual(values = cbbPalette) + 
+  ggtitle("Figure 1")
+TP_Bay_all
 
-#ggsave(plot = TP_Bay_all, "Figure2.jpeg", width = 10, height = 7)
+#ggsave(plot = TP_Bay_all, "Figure1.tif", device = "tiff", dpi = 600, compression = "lzw", width = 11, height = 7)
 
 
 ##########
@@ -209,15 +242,7 @@ TP_Bay_all <- plot_3 %>%
 # Creating biplots of baseline corrected δ15N and δ13C
 
 # Formatting data for plotting
-birdiso$elevcat <- ifelse(birdiso$ELEV > 2200, "high", ifelse(birdiso$ELEV > 1500 & birdiso$ELEV < 2300, "mid", ifelse(birdiso$ELEV > 500 & birdiso$ELEV < 1400, "low", NA)))
 
-plant$elevcat<-ifelse(plant$ELEV > 2200, "high", ifelse(plant$ELEV > 1500 & plant$ELEV < 2300, "mid", ifelse(plant$ELEV > 500 & plant$ELEV < 1400, "low", NA)))
-
-baselines<-plant %>% group_by(elevcat) %>% summarise(d15N_base = mean(d15N), d13C_base = mean(d13C), d13C_min = min(d13C), d13C_max = max(d13C), SE_N = sd(d15N)/sqrt(n()), SE_C = sd(d13C)/sqrt(n()))
-
-birdiso_base<-left_join(birdiso,baselines) %>% select(c(INDID,SPECIES,ELEV,elevcat,Season,d13C,d15N,mig, d15N_base, d13C_base, d13C_min, d13C_max ))
-
-birdiso_base$TP<-1 + (birdiso_base$d15N - birdiso_base$d15N_base)/2.3
 birdiso_base$d13Ccorr<- (birdiso_base$d13C - birdiso_base$d13C_base)/(birdiso_base$d13C_max-birdiso_base$d13C_min)
 
 birdiso_base$mig<-factor( birdiso_base$mig, levels = c("Resident", "Migrant"))
@@ -241,7 +266,7 @@ res_ellipse_plot<- res_ellipse %>%
   #xlim(c(0.3,1))+ylim(c(2,5.3))+
   theme_bw()+
   theme(text = element_text(size=12)) + 
-  facet_wrap(~SPECIES,  nrow=1) +
+  facet_wrap(~SPECIES,  ncol=1) +
   ggtitle("Residents") +
   theme(plot.title = element_text(hjust = 0.5, size = 15))+
   scale_fill_manual(values = cbbPalette)+
@@ -263,12 +288,12 @@ mig_ellipse<-rbind(mig_ellipse,all_mig)
 mig_ellipse_plot <- mig_ellipse %>% 
   ggplot(aes(d13Ccorr,TP)) +
   geom_point(aes(color = Season))+
-  ylab("Trophic Position")+
+  labs(y = NULL)+
   xlab(expression(paste(delta^{13}, "Ccorr"))) +
   #xlim(c(0.3,1))+ylim(c(2,5.3))+
   theme_bw()+
   theme(text = element_text(size=12)) + 
-  facet_wrap(~SPECIES,  nrow=1) +
+  facet_wrap(~SPECIES,  ncol=1) +
   ggtitle("Elevation Migrants") +
   theme(plot.title = element_text(hjust = 0.5, size = 15))+
   scale_fill_manual(values = cbbPalette)+
@@ -282,10 +307,16 @@ mig_ellipse_plot <- mig_ellipse %>%
   theme(axis.title=element_text(size=15), legend.text = element_text(size=15), legend.title = element_text(size=15))
 
 ## Putting resident and migrant plots together
-std_ellipse_all<-ggarrange(res_ellipse_plot,mig_ellipse_plot, nrow = 2, legend = "bottom", common.legend = T )+
+std_ellipse_all<-ggarrange(res_ellipse_plot,mig_ellipse_plot, ncol = 2, legend = "bottom", common.legend = T )+
   guides (size = 15)
 
-#ggsave(plot = std_ellipse_all, "Figure3.jpeg", width = 14, height = 7)
+std_ellipse_all<-annotate_figure(std_ellipse_all,
+                top = text_grob("Figure 2",x = 0, hjust = -0.1))
+
+std_ellipse_all<- std_ellipse_all+theme(plot.background = element_rect(fill = "white", color = NA))
+
+library(ragg)
+#ggsave(plot = std_ellipse_all, "Figure2.tif", device = ragg::agg_tiff, dpi = 600, compression = "lzw" ,width = 5.5, height = 11)
 
 
 #### Bayesian analysis of seasonal niche overlap using NicheROVER
